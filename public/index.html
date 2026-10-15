@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fiora Watch · 一起看</title><link rel="stylesheet" href="/style.css"><script defer src="/vendor/hls.min.js"></script><script defer src="/app.js"></script></head>
+<body>
+  <header><a class="brand" href="/">fiora<span>watch</span></a><div class="header-right"><span id="identity">私人放映室</span><button id="logout" class="quiet" hidden>退出影院</button></div></header>
+  <main>
+    <div class="heading"><div><p class="eyebrow">OUR LITTLE CINEMA</p><h1>把这一集，留给我们。</h1></div><span id="connection" class="badge">等待加入</span></div>
+    <p id="notice" role="status" aria-live="polite">请从 Fiora 聊天中的「一起看」邀请进入。</p>
+    <div class="layout">
+      <section class="screen-section">
+        <div class="screen"><video id="video" playsinline preload="metadata"></video><div id="empty"><span class="film">▶</span><h2>今晚看什么？</h2><p>选择在线视频，或从本地媒体库开始。</p></div></div>
+        <div class="transport"><button id="join" class="primary">开启本机播放</button><button id="play" disabled>播放</button><button id="pause" disabled>暂停</button><span id="time">00:00 / 00:00</span><button id="fullscreen" class="quiet">全屏</button></div>
+        <label class="seek-label">播放进度<input id="seek" type="range" min="0" max="100" value="0" step="0.1" disabled></label>
+        <div class="volume"><label>本机音量 <input id="volume" type="range" min="0" max="1" step="0.05" value="1"></label><span>播放、暂停和进度随房间同步</span></div>
+        <div class="now"><span class="eyebrow">NOW SHOWING</span><h2 id="title">尚未选择视频</h2><p id="permission">登录后即可加入影院</p></div>
+      </section>
+      <aside>
+        <nav aria-label="视频来源"><button class="tab active" data-tab="online">在线解析</button><button class="tab" data-tab="local">本地媒体</button><button class="tab" data-tab="download" id="download-tab" hidden>提前下载</button></nav>
+        <section class="panel" id="online-panel"><h2>一个链接，一起开始</h2><p>支持已适配的播放页与 HLS / MP4 直链。在线视频由各自浏览器加载。</p><form id="source-form"><label for="source">视频地址</label><input id="source" type="url" maxlength="4096" placeholder="https://…" required><button class="primary" id="load">解析并选为当前视频</button></form><button id="clear" class="quiet">清空当前视频</button><p class="hint">暂未接入 Bilibili 登录解析。来源过期时可重新提交原播放页。</p></section>
+        <section class="panel" id="local-panel" hidden><div class="section-title"><h2>本地媒体库</h2><button id="refresh-library" class="quiet">刷新</button></div><p>服务器挂载的视频与已完成的下载。</p><div id="library" class="items"></div></section>
+        <section class="panel" id="download-panel" hidden><h2>提前准备好下一集</h2><p>下载完成后进入本地媒体库。任务逐个执行。</p><form id="download-form"><label for="download-source">下载地址</label><input id="download-source" type="url" maxlength="4096" required placeholder="播放页 / m3u8 / mp4"><button class="primary">加入下载队列</button></form><p id="storage" class="hint"></p><div id="jobs" class="items"></div></section>
+      </aside>
+    </div>
+    <footer><span>FIORA WATCH</span><span>一间小影院，一段共同的时间。</span></footer>
+  </main>
+</body></html>

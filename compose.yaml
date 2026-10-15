@@ -1,0 +1,35 @@
+services:
+  watch:
+    build: .
+    image: fiora-watch:local
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:${WATCH_PORT:-9300}:9300"
+    environment:
+      WATCH_PUBLIC_URL: ${WATCH_PUBLIC_URL:?Set WATCH_PUBLIC_URL}
+      FIORA_ORIGIN: ${FIORA_ORIGIN:?Set FIORA_ORIGIN}
+      WATCH_SHARED_SECRET: ${WATCH_SHARED_SECRET:?Set WATCH_SHARED_SECRET}
+      MEDIA_ALLOWED_HOSTS: ${MEDIA_ALLOWED_HOSTS:-ani.girigirilove.com,akua.girigirilove.com}
+      CACHE_GB: ${CACHE_GB:-20}
+      MAX_DOWNLOAD_GB: ${MAX_DOWNLOAD_GB:-4}
+    volumes:
+      - watch_data:/data
+      - ./library:/library:ro
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 100
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+volumes:
+  watch_data:

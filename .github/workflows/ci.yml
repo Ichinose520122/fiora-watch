@@ -1,0 +1,30 @@
+name: Test and container build
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install --global pnpm@11.25.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: docker compose --env-file .env.example config --quiet
+        env:
+          WATCH_SHARED_SECRET: ci-only-not-a-production-secret-0123456789
+      - run: docker build -t fiora-watch:test .
+      - name: Container health check
+        run: |
+          docker run -d --name watch-test -p 9300:9300 -e WATCH_SHARED_SECRET=ci-only-not-a-production-secret-0123456789 fiora-watch:test
+          for i in $(seq 1 20); do
+            if curl --fail http://127.0.0.1:9300/health; then exit 0; fi
+            sleep 1
+          done
+          docker logs watch-test
+          exit 1
