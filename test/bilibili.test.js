@@ -23,6 +23,14 @@ test('Bilibili accepts BV / av and lists canonical selected parts without media 
   const shortRead = async url => new URL(url).hostname === 'b23.tv' ? { url: `https://www.bilibili.com/video/${bvid}/?p=2` } : reader()(url);
   assert.equal((await listBilibiliEpisodes('https://b23.tv/Ab123', [], shortRead)).episodeIndex, 1);
   await assert.rejects(listBilibiliEpisodes('https://b23.tv/Ab123', [], async () => ({ url: 'https://127.0.0.1/private' })));
+  const pageRead = async url => {
+    if (new URL(url).pathname.endsWith('/view')) throw new Error('来源返回 HTTP 412');
+    return { url, text: `<script>window.__INITIAL_STATE__=${JSON.stringify({ videoData: { ...view, title: 'JSON 中的 } 和 \\" 引号' } })};(function(){throw new Error('must never run')})();</script>` };
+  };
+  const fallback = await listBilibiliEpisodes(`https://www.bilibili.com/video/${bvid}/?p=2`, [], pageRead);
+  assert.equal(fallback.episodeIndex, 1); assert.equal(fallback.title, 'JSON 中的 } 和 \\" 引号');
+  await assert.rejects(listBilibiliEpisodes(bvid, [], async () => { throw new Error('来源返回 HTTP 412'); }), /限制了影院服务器.*HTTP 412/);
+  await assert.rejects(listBilibiliEpisodes(bvid, [], async url => new URL(url).pathname.endsWith('/view') ? Promise.reject(new Error('来源返回 HTTP 412')) : { url, text: '<script>window.__INITIAL_STATE__=process.exit()</script>' }), /有效 JSON/);
 });
 
 test('DASH manifest preserves SegmentBase and uses only same-origin video/audio proxies', async () => {

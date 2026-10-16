@@ -12,6 +12,8 @@ const HEADERS = Object.freeze({
 const BV = /^BV[1-9A-HJ-NP-Za-km-z]{10}$/;
 const AV = /^av([1-9]\d{0,15})$/i;
 const UNSUPPORTED = 'B站此视频需要登录、付费、地区授权或使用不支持的播放形式，请使用官方播放器';
+const ACCESS_RESTRICTED = 'B站暂时限制了影院服务器的访问（HTTP 412），请稍后重试或使用官方播放器';
+const restricted = error => /HTTP\s*412\b/.test(String(error?.message || ''));
 
 function inputUrl(input) {
   if (typeof input !== 'string' || input.length > 4096) throw new Error('B站视频地址格式错误');
@@ -52,10 +54,16 @@ async function identity(input, read) {
 async function api(path, parameters, read) {
   const url = new URL(`https://api.bilibili.com${path}`);
   for (const [key, value] of Object.entries(parameters)) url.searchParams.set(key, String(value));
-  const result = await readProvider(url.href, API_HOSTS, read);
+  let result;
+  try { result = await readProvider(url.href, API_HOSTS, read); }
+  catch (error) {
+    if (restricted(error)) throw new Error(ACCESS_RESTRICTED, { cause: error });
+    throw error;
+  }
   let body;
   try { body = JSON.parse(result.text); } catch { throw new Error('B站接口未返回有效数据，可能触发访问限制，请稍后重试'); }
   if (body.code !== 0 || !body.data) {
+    if (body.code === -412) throw new Error(ACCESS_RESTRICTED);
     if ([-403, -404, -10403, 62002, 62004].includes(body.code)) throw new Error(UNSUPPORTED);
     throw new Error(`B站接口暂不可用（${Number.isInteger(body.code) ? body.code : '未知'}），请稍后重试`);
   }
@@ -63,6 +71,37 @@ async function api(path, parameters, read) {
 }
 
 function canonical(bvid, page) { return `https://www.bilibili.com/video/${bvid}/?p=${page}`; }
+
+function initialState(text) {
+  // Read only the balanced JSON object assigned by the public video page. Never eval scripts.
+  const marker = /(?:^|[\s;>])window\.__INITIAL_STATE__\s*=\s*/.exec(text);
+  if (!marker) throw new Error('B站公开页面没有可用的视频资料，请稍后重试或使用官方播放器');
+  const start = marker.index + marker[0].length;
+  if (text[start] !== '{') throw new Error('B站公开页面视频资料不是有效 JSON');
+  let depth = 0; let quoted = false; let escaped = false;
+  for (let offset = start; offset < text.length; offset += 1) {
+    const character = text[offset];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') quoted = false;
+    } else if (character === '"') quoted = true;
+    else if (character === '{') depth += 1;
+    else if (character === '}' && --depth === 0) {
+      try { return JSON.parse(text.slice(start, offset + 1)); }
+      catch { throw new Error('B站公开页面视频资料不是有效 JSON'); }
+    }
+  }
+  throw new Error('B站公开页面视频资料不完整');
+}
+
+async function pageMetadata(selected, read) {
+  const result = await readProvider(canonical(selected.id, selected.page), SITE_HOSTS, read);
+  const data = initialState(result.text)?.videoData;
+  const sameVideo = BV.test(selected.id) ? data?.bvid === selected.id : String(data?.aid) === AV.exec(selected.id)[1];
+  if (!sameVideo) throw new Error('B站公开页面未提供所选视频资料，请使用官方播放器');
+  return data;
+}
 
 function safeCover(value) {
   if (typeof value !== 'string' || value.length > 4096) return '';
@@ -76,7 +115,18 @@ function safeCover(value) {
 
 async function metadata(input, read) {
   const selected = await identity(input, read);
-  const data = await api('/x/web-interface/view', BV.test(selected.id) ? { bvid: selected.id } : { aid: AV.exec(selected.id)[1] }, read);
+  let data;
+  try { data = await api('/x/web-interface/view', BV.test(selected.id) ? { bvid: selected.id } : { aid: AV.exec(selected.id)[1] }, read); }
+  catch (error) {
+    if (!restricted(error)) throw error;
+    // Some server IPs can read normal public pages and playurl but cannot call view.
+    // This is the same anonymous metadata embedded in that public page, with all checks below retained.
+    try { data = await pageMetadata(selected, read); }
+    catch (pageError) {
+      if (restricted(pageError)) throw new Error(ACCESS_RESTRICTED, { cause: pageError });
+      throw pageError;
+    }
+  }
   if (!BV.test(data.bvid) || !Array.isArray(data.pages) || !data.pages.length || data.pages.length > 2000) throw new Error('B站没有有效的分P列表');
   if (data.rights?.pay || data.rights?.ugc_pay || data.rights?.arc_pay || data.rights?.is_stein_gate ||
       data.is_upower_exclusive || data.is_upower_preview || data.is_chargeable_season) throw new Error(UNSUPPORTED);
