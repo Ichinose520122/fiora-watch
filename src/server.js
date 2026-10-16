@@ -6,6 +6,9 @@ import { Store, control } from './store.js';
 import { MediaLibrary, safeFile } from './media.js';
 import { resolveMedia } from './resolver.js';
 import { loadConfig } from './config.js';
+import { createChatBridge } from './chat.js';
+
+export const SESSION_MS = 180 * 60000;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -15,6 +18,7 @@ export function createApp(config, dependencies = {}) {
   const sessions = new Map(); const streams = new Set(); const limits = new Map();
   const library = dependencies.library || new MediaLibrary(config, store);
   const resolve = dependencies.resolve || resolveMedia;
+  const chat = dependencies.chat || createChatBridge(config);
   app.disable('x-powered-by');
   app.use((_req, res, next) => {
     res.set({ 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store',
@@ -42,9 +46,10 @@ export function createApp(config, dependencies = {}) {
       id = randomId(); session = { user: {}, grants: {} }; sessions.set(id, session);
     }
     session.user = { id: payload.sub, name: payload.name, avatar: typeof payload.avatar === 'string' ? payload.avatar : '', admin: payload.admin };
-    session.grants[payload.room] = { canControl: payload.canControl, expires: Date.now() + 2 * 3600000 };
+    session.grants[payload.room] = { canControl: payload.canControl, expires: Date.now() + SESSION_MS,
+      chatGrant: typeof payload.chatGrant === 'string' && payload.chatGrant.length <= 4096 ? payload.chatGrant : '' };
     store.room(payload.room);
-    res.cookie('watch_session', id, { httpOnly: true, sameSite: 'strict', secure: config.audience.startsWith('https:'), maxAge: 2 * 3600000, path: '/' });
+    res.cookie('watch_session', id, { httpOnly: true, sameSite: 'strict', secure: config.audience.startsWith('https:'), maxAge: SESSION_MS, path: '/' });
     res.json({ room: payload.room });
   });
   const authenticate = (req, res, next) => {
@@ -61,11 +66,25 @@ export function createApp(config, dependencies = {}) {
     if (!grant || grant.expires <= Date.now()) return res.status(403).json({ error: '没有此影院权限，请从对应聊天重新进入' });
     req.grant = grant; req.room = store.room(roomId); next();
   };
-  const snapshot = (room, session, grant) => ({ ...room, serverTime: Date.now(), user: session.user, canControl: grant.canControl });
+  const snapshot = (room, session, grant) => ({ ...room, serverTime: Date.now(), user: session.user, canControl: grant.canControl, fioraUrl: config.issuer });
   const publish = room => {
     for (const stream of streams) if (stream.room.id === room.id) stream.res.write(`data: ${JSON.stringify(snapshot(room, stream.session, stream.grant))}\n\n`);
   };
   app.get('/api/state', roomAccess, (req, res) => res.json(snapshot(req.room, req.session, req.grant)));
+  app.get('/api/chat', roomAccess, async (req, res) => {
+    throttle(`read:${req.session.user.id}`, 120);
+    try { res.json(await chat(req.grant, { action: 'read' })); }
+    catch (error) {
+      if ([401, 403].includes(error.status)) req.grant.expires = 0;
+      throw error;
+    }
+  });
+  app.post('/api/chat', roomAccess, async (req, res) => {
+    throttle(`comment:${req.session.user.id}`, 30);
+    if (typeof req.body?.content !== 'string' || req.body.content.length > 2048 || !req.body.content.trim() ||
+        !/^[a-f0-9-]{36}$/.test(req.body.requestId)) throw new Error('评论或发送编号无效');
+    res.json(await chat(req.grant, { action: 'send', content: req.body.content, requestId: req.body.requestId }));
+  });
   app.get('/api/events', roomAccess, (req, res) => {
     if (streams.size >= 100) throw new Error('影院连接数量已达上限');
     res.set({ 'Content-Type': 'text/event-stream', 'X-Accel-Buffering': 'no', Connection: 'keep-alive' }); res.flushHeaders();
@@ -89,7 +108,7 @@ export function createApp(config, dependencies = {}) {
       if (!media) throw new Error('本地视频不存在');
     } else if (req.body.mode !== 'clear') throw new Error('播放模式无效');
     if (req.grant.expires <= Date.now() || revision !== req.room.revision) throw new Error('房间状态已改变，请刷新后重新选择');
-    Object.assign(req.room, { media, paused: true, position: 0, updatedAt: Date.now(), revision: req.room.revision + 1 });
+    Object.assign(req.room, { media, mediaVersion: req.room.revision + 1, paused: true, position: 0, updatedAt: Date.now(), revision: req.room.revision + 1 });
     store.save(); publish(req.room); res.json({ ok: true });
   });
   app.get('/api/library', (_req, res) => res.json({ items: library.list() }));
@@ -116,7 +135,8 @@ export function createApp(config, dependencies = {}) {
   app.get('/vendor/hls.min.js', (_req, res) => res.sendFile(path.resolve(here, '../node_modules/hls.js/dist/hls.min.js')));
   app.use(express.static(path.resolve(here, '../public'), { etag: false }));
   app.get('/room/:id', (_req, res) => res.sendFile(path.resolve(here, '../public/index.html')));
-  app.use((error, _req, res, _next) => { if (!res.headersSent) res.status(400).json({ error: String(error.message || '请求失败').slice(0, 240) }); });
+  app.get('/room/:id/manage', (_req, res) => res.sendFile(path.resolve(here, '../public/manage.html')));
+  app.use((error, _req, res, _next) => { if (!res.headersSent) res.status([401, 403, 409, 503].includes(error.status) ? error.status : 400).json({ error: String(error.message || '请求失败').slice(0, 240) }); });
   const timer = setInterval(() => {
     const now = Date.now();
     for (const stream of streams) {

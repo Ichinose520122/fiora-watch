@@ -10,7 +10,8 @@ import { Store, control, position } from '../src/store.js';
 import { publicAddress, allowedUrl, requestPublic } from '../src/network.js';
 import { parseMacCMS, parsePlaylist, resolveMedia } from '../src/resolver.js';
 import { MediaLibrary, safeFile } from '../src/media.js';
-import { createApp } from '../src/server.js';
+import { createApp, SESSION_MS } from '../src/server.js';
+import { createChatBridge } from '../src/chat.js';
 import { loadConfig } from '../src/config.js';
 
 const secret = 'test-secret-only-0123456789abcdef0123456789';
@@ -115,6 +116,8 @@ test('HTTP integration: single-use login, room isolation, two viewers, CSRF, rol
   const login = await request('/api/session', '', { ticket }); assert.equal(login.status, 200);
   const cookie = login.headers.get('set-cookie').split(';')[0];
   assert.match(login.headers.get('set-cookie'), /HttpOnly/);
+  assert.match(login.headers.get('set-cookie'), /Max-Age=10800/);
+  assert.equal(SESSION_MS, 180 * 60000);
   assert.equal((await request('/api/session', '', { ticket })).status, 400);
   assert.equal((await request('/api/state')).status, 401);
   assert.equal((await request('/api/state', cookie, undefined, { 'X-Watch-Room': 'c'.repeat(24) })).status, 403);
@@ -131,4 +134,40 @@ test('HTTP integration: single-use login, room isolation, two viewers, CSRF, rol
   assert.equal((await request('/media/local/movie.mp4')).status, 401);
   assert.equal((await request('/media/local/movie.mp4', cookie, undefined, { Range: 'bytes=99-100' })).status, 416);
   await request('/api/logout', cookie, {}); assert.equal((await request('/api/state', cookie)).status, 401);
+});
+
+test('chat bridge uses the configured Fiora endpoint and server-only scoped credential', async () => {
+  let call;
+  const bridge = createChatBridge(config, async (url, options) => { call = { url: String(url), options }; return new Response(JSON.stringify({ messages: [] }), { headers: { 'Content-Type': 'application/json' } }); });
+  await bridge({ chatGrant: 'scoped-credential' }, { action: 'read' });
+  assert.equal(call.url, 'https://chat.example.com/api/watch/chat');
+  assert.equal(call.options.headers.Authorization, 'Bearer scoped-credential');
+  assert.equal(call.options.redirect, 'error');
+  await assert.rejects(bridge({}, { action: 'read' }), /重新进入/);
+});
+
+test('chat API isolates rooms, hides grant from state and invalidates denied membership', async t => {
+  const dataDir = temporary(t); const calls = []; let denied = false;
+  const instance = createApp({ ...config, dataDir, libraryDir: path.join(dataDir, 'library') }, { chat: async (grant, data) => {
+    calls.push({ grant, data });
+    if (denied) throw Object.assign(new Error('你不在该群组中'), { status: 403 });
+    return data.action === 'read' ? { messages: [{ id: '1', content: 'Fiora message' }] } : { id: '2' };
+  } });
+  const server = instance.app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
+  t.after(async () => { instance.close(); await new Promise(resolve => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  let cookie = ''; const headers = { Origin: config.audience, 'Content-Type': 'application/json', 'X-Watch-Request': '1', 'X-Watch-Room': room };
+  const request = (url, body, extra = {}) => fetch(base + url, { method: body === undefined ? 'GET' : 'POST', headers: { ...headers, Cookie: cookie, ...extra }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const login = await request('/api/session', { ticket: signTicket(payload({ chatGrant: 'private-grant' }), secret) }); cookie = login.headers.get('set-cookie').split(';')[0];
+  assert.equal((await (await request('/api/chat')).json()).messages[0].content, 'Fiora message');
+  assert.equal((await request('/api/chat', undefined, { 'X-Watch-Room': 'c'.repeat(24) })).status, 403);
+  const id = '12345678-1234-1234-1234-123456789abc';
+  assert.equal((await request('/api/chat', { content: 'hello', requestId: id, user: 'evil', room: 'evil' })).status, 200);
+  assert.deepEqual(calls.at(-1).data, { action: 'send', content: 'hello', requestId: id });
+  assert.equal(calls.at(-1).grant.chatGrant, 'private-grant');
+  assert.equal((await request('/api/state')).status, 200);
+  assert.equal((await (await request('/api/state')).text()).includes('private-grant'), false);
+  assert.equal((await request('/room/' + room + '/manage')).status, 200);
+  const html = await (await request('/room/' + room)).text(); assert.equal(html.includes('download-form'), false); assert.equal(html.includes('comment-form'), true);
+  denied = true; assert.equal((await request('/api/chat')).status, 403); assert.equal((await request('/api/state')).status, 401);
 });
