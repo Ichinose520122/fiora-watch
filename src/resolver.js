@@ -1,4 +1,6 @@
 import { allowedUrl, fetchText } from './network.js';
+import { isCatalogUrl, parseEpisodes } from './catalog.js';
+import { isBilibiliUrl, resolveBilibili } from './bilibili.js';
 
 export function parseMacCMS(html, pageUrl) {
   // Only JSON data is read. Never evaluate the source site's JavaScript.
@@ -14,18 +16,28 @@ export function parseMacCMS(html, pageUrl) {
 
 export async function resolveMedia(input, hosts, read = fetchText) {
   if (typeof input !== 'string' || input.length > 4096) throw new Error('视频地址格式错误');
+  if (isBilibiliUrl(input.trim())) return resolveBilibili(input.trim(), hosts, read);
   const source = allowedUrl(input.trim(), hosts).href;
   let url = source;
+  let catalog;
   let title = new URL(source).pathname.split('/').filter(Boolean).pop() || '在线视频';
   if (!/\.(m3u8|mp4)(?:\?|$)/i.test(url)) {
-    const page = await read(url, hosts);
+    let page = await read(url, hosts);
+    if (isCatalogUrl(page.url)) {
+      catalog = parseEpisodes(page.text, page.url);
+      if (/^\/GV\d+\/?$/.test(new URL(page.url).pathname)) {
+        page = await read(catalog.episodes[0].url, hosts);
+      }
+    }
     url = parseMacCMS(page.text, page.url);
     const name = /<title[^>]*>([^<]+)<\/title>/i.exec(page.text)?.[1];
     if (name) title = name.trim().slice(0, 160);
+    if (catalog) title = `${catalog.title} · ${catalog.episodes[catalog.episodeIndex].title}`;
   }
   allowedUrl(url, hosts);
   if (!/\.(m3u8|mp4)(?:\?|$)/i.test(url)) throw new Error('解析结果不是支持的 HLS / MP4 视频');
-  return { kind: /\.m3u8(?:\?|$)/i.test(url) ? 'hls' : 'mp4', url, source, title };
+  return { kind: /\.m3u8(?:\?|$)/i.test(url) ? 'hls' : 'mp4', url, source, title,
+    ...(catalog ? { episodes: catalog.episodes, episodeIndex: catalog.episodeIndex, seriesTitle: catalog.title, cover: catalog.cover } : {}) };
 }
 
 export function parsePlaylist(text, base, hosts) {

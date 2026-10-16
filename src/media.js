@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { requestPublic, fetchText } from './network.js';
 import { resolveMedia, parsePlaylist } from './resolver.js';
+import { isBilibiliUrl } from './bilibili.js';
 
 export function safeFile(root, relative) {
   const base = fs.realpathSync(root);
@@ -42,7 +43,7 @@ export class MediaLibrary {
     };
     walk(this.config.libraryDir);
     for (const job of this.store.data.jobs) {
-      if (job.status === 'done') items.push({ id: `download:${job.id}`, title: job.title, kind: job.kind === 'hls' ? 'hls' : 'file', url: `/media/download/${job.id}/${job.kind === 'hls' ? 'index.m3u8' : 'video.mp4'}` });
+      if (job.status === 'done') items.push({ id: `download:${job.id}`, title: job.title, cover: job.cover || '', seriesTitle: job.seriesTitle || '', source: job.source, kind: job.kind === 'hls' ? 'hls' : 'file', url: `/media/download/${job.id}/${job.kind === 'hls' ? 'index.m3u8' : 'video.mp4'}` });
     }
     return items;
   }
@@ -57,6 +58,7 @@ export class MediaLibrary {
   }
   enqueue(source, actor) {
     if (typeof source !== 'string' || source.length > 4096) throw new Error('视频地址格式错误');
+    if (isBilibiliUrl(source)) throw new Error('B站视频请使用在线模式，暂不支持提前下载');
     if (this.store.data.jobs.filter(job => ['queued', 'running'].includes(job.status)).length >= 10) throw new Error('下载队列已满');
     if (this.store.data.jobs.length >= 1000) throw new Error('下载记录已达上限，请删除旧任务');
     const job = { id: randomUUID(), source, by: actor, title: '等待解析', status: 'queued', bytes: 0, completed: 0, total: 0, createdAt: Date.now() };
@@ -98,7 +100,8 @@ export class MediaLibrary {
           if (budget >= this.config.cacheBytes) throw new Error('缓存已满，请删除旧下载');
           job.status = 'running'; this.store.save();
           const media = await this.resolve(job.source, this.config.hosts);
-          Object.assign(job, { title: media.title, kind: media.kind });
+          if (media.bilibili || media.kind === 'dash') throw new Error('B站视频请使用在线模式，暂不支持提前下载');
+          Object.assign(job, { title: media.title, kind: media.kind, cover: media.cover || '', seriesTitle: media.seriesTitle || '' });
           fs.mkdirSync(directory);
           const signal = this.abort.signal;
           if (media.kind === 'hls') {

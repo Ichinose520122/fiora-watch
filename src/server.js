@@ -7,6 +7,9 @@ import { MediaLibrary, safeFile } from './media.js';
 import { resolveMedia } from './resolver.js';
 import { loadConfig } from './config.js';
 import { createChatBridge } from './chat.js';
+import { createCatalog } from './catalog.js';
+import { isBilibiliUrl, listBilibiliEpisodes, resolveBilibili, buildBilibiliManifest, requestBilibiliTrack } from './bilibili.js';
+import { pipeline } from 'node:stream/promises';
 
 export const SESSION_MS = 180 * 60000;
 
@@ -19,6 +22,10 @@ export function createApp(config, dependencies = {}) {
   const library = dependencies.library || new MediaLibrary(config, store);
   const resolve = dependencies.resolve || resolveMedia;
   const chat = dependencies.chat || createChatBridge(config);
+  const catalog = dependencies.catalog || createCatalog(config.hosts);
+  const requestTrack = dependencies.requestTrack || requestBilibiliTrack;
+  const refreshing = new Map();
+  const invitationUpdates = new Map();
   app.disable('x-powered-by');
   app.use((_req, res, next) => {
     res.set({ 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store',
@@ -66,11 +73,64 @@ export function createApp(config, dependencies = {}) {
     if (!grant || grant.expires <= Date.now()) return res.status(403).json({ error: '没有此影院权限，请从对应聊天重新进入' });
     req.grant = grant; req.room = store.room(roomId); next();
   };
-  const snapshot = (room, session, grant) => ({ ...room, serverTime: Date.now(), user: session.user, canControl: grant.canControl, fioraUrl: config.issuer });
+  const trackPath = (room, index) => `/api/bilibili/track?room=${room.id}&version=${room.mediaVersion}&track=${index}`;
+  const publicMedia = room => {
+    if (!room.media) return null;
+    const { bilibili, ...media } = room.media;
+    if (bilibili) media.url = media.kind === 'dash' ? `/api/bilibili/manifest?room=${room.id}&version=${room.mediaVersion}` : trackPath(room, 0);
+    return media;
+  };
+  const snapshot = (room, session, grant) => ({ ...room, media: publicMedia(room), serverTime: Date.now(), user: session.user, canControl: grant.canControl, fioraUrl: config.issuer });
   const publish = room => {
     for (const stream of streams) if (stream.room.id === room.id) stream.res.write(`data: ${JSON.stringify(snapshot(room, stream.session, stream.grant))}\n\n`);
   };
   app.get('/api/state', roomAccess, (req, res) => res.json(snapshot(req.room, req.session, req.grant)));
+  app.get('/api/catalog/search', roomAccess, async (req, res) => {
+    throttle(`catalog:${req.session.user.id}`, 30);
+    res.json(await catalog.search(req.query.q, req.query.page || 1));
+  });
+  app.get('/api/catalog/episodes', roomAccess, async (req, res) => {
+    throttle(`catalog:${req.session.user.id}`, 30);
+    res.json(isBilibiliUrl(req.query.url) ? await listBilibiliEpisodes(req.query.url) : await catalog.episodes(req.query.url));
+  });
+  const bilibiliAccess = (req, res, next) => {
+    if (!req.room.media?.bilibili || String(req.room.mediaVersion) !== req.query.version) return res.status(404).json({ error: '影片已切换，请刷新播放页' });
+    next();
+  };
+  app.get('/api/bilibili/manifest', roomAccess, bilibiliAccess, (req, res) => {
+    res.type('application/dash+xml').send(buildBilibiliManifest(req.room.media, (_track, index) => trackPath(req.room, index)));
+  });
+  app.get('/api/bilibili/track', roomAccess, bilibiliAccess, async (req, res, next) => {
+    if (typeof req.query.track !== 'string' || !/^\d{1,2}$/.test(req.query.track)) return res.sendStatus(404);
+    const index = Number(req.query.track); const media = req.room.media;
+    if (!media.bilibili.tracks[index]) return res.sendStatus(404);
+    const controller = new AbortController();
+    const expiry = setTimeout(() => controller.abort(), Math.max(1, req.grant.expires - Date.now()));
+    res.on('close', () => controller.abort());
+    try {
+      let upstream;
+      try { upstream = await requestTrack(media.bilibili.tracks[index], req.headers.range, controller.signal); }
+      catch (error) {
+        // Refresh expired CDN links, retaining exactly the same DASH representations.
+        if (!/HTTP (403|410)/.test(error.message)) throw error;
+        const key = `${req.room.id}:${req.query.version}`;
+        if (!refreshing.has(key)) refreshing.set(key, resolveBilibili(media.source).finally(() => refreshing.delete(key)));
+        const renewed = await refreshing.get(key);
+        if (req.room.media !== media) return res.sendStatus(409);
+        const replacements = media.bilibili.tracks.map(old => renewed.bilibili.tracks.find(track => track.id === old.id && track.codecs === old.codecs && track.bandwidth === old.bandwidth && track.initialization === old.initialization && track.indexRange === old.indexRange));
+        if (replacements.some(track => !track)) throw new Error('B站片源已改变，请重新选择当前分P');
+        media.bilibili.tracks = replacements; store.save();
+        upstream = await requestTrack(media.bilibili.tracks[index], req.headers.range, controller.signal);
+      }
+      if (req.grant.expires <= Date.now() || req.room.media !== media) { upstream.response.destroy(); return res.sendStatus(403); }
+      const response = upstream.response;
+      res.status(response.statusCode).type(media.bilibili.tracks[index].mimeType);
+      for (const name of ['content-length', 'content-range', 'accept-ranges']) if (response.headers[name]) res.set(name, response.headers[name]);
+      if (response.statusCode === 416 || req.method === 'HEAD') { response.destroy(); if (response.statusCode === 416) res.set('Content-Length', '0'); return res.end(); }
+      await pipeline(response, res);
+    } catch (error) { if (!res.headersSent && !res.destroyed) next(error); else res.destroy(); }
+    finally { clearTimeout(expiry); }
+  });
   app.get('/api/chat', roomAccess, async (req, res) => {
     throttle(`read:${req.session.user.id}`, 120);
     try { res.json(await chat(req.grant, { action: 'read' })); }
@@ -109,7 +169,20 @@ export function createApp(config, dependencies = {}) {
     } else if (req.body.mode !== 'clear') throw new Error('播放模式无效');
     if (req.grant.expires <= Date.now() || revision !== req.room.revision) throw new Error('房间状态已改变，请刷新后重新选择');
     Object.assign(req.room, { media, mediaVersion: req.room.revision + 1, paused: true, position: 0, updatedAt: Date.now(), revision: req.room.revision + 1 });
-    store.save(); publish(req.room); res.json({ ok: true });
+    store.save(); publish(req.room);
+    // Serialize cover/title changes so a slow earlier choice cannot overwrite a newer card.
+    const selected = media;
+    const previous = invitationUpdates.get(req.room.id) || Promise.resolve();
+    const update = previous.catch(() => {}).then(async () => {
+      if (req.room.media !== selected) return;
+      await chat(req.grant, { action: 'media', title: (selected?.seriesTitle || selected?.title || '一起看').slice(0, 180),
+        cover: selected?.cover || '', source: selected?.source?.startsWith('https://') ? selected.source : '' });
+    });
+    invitationUpdates.set(req.room.id, update);
+    let warning;
+    try { await update; } catch { warning = '影片已加载，Fiora 邀请卡片暂未更新'; }
+    finally { if (invitationUpdates.get(req.room.id) === update) invitationUpdates.delete(req.room.id); }
+    res.json({ ok: true, ...(warning ? { warning } : {}) });
   });
   app.get('/api/library', (_req, res) => res.json({ items: library.list() }));
   const admin = (req, res, next) => req.session.user.admin ? next() : res.status(403).json({ error: '只有站点管理员可以管理下载' });
@@ -133,6 +206,7 @@ export function createApp(config, dependencies = {}) {
     } catch { return res.sendStatus(404); }
   });
   app.get('/vendor/hls.min.js', (_req, res) => res.sendFile(path.resolve(here, '../node_modules/hls.js/dist/hls.min.js')));
+  app.get('/vendor/dash.all.min.js', (_req, res) => res.sendFile(path.resolve(here, '../node_modules/dashjs/dist/modern/umd/dash.all.min.js')));
   app.use(express.static(path.resolve(here, '../public'), { etag: false }));
   app.get('/room/:id', (_req, res) => res.sendFile(path.resolve(here, '../public/index.html')));
   app.get('/room/:id/manage', (_req, res) => res.sendFile(path.resolve(here, '../public/manage.html')));

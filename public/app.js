@@ -1,13 +1,13 @@
-/* global Hls */
+/* global Hls, dashjs */
 const $ = id => document.getElementById(id);
 const video = $('video');
 let room = /^\/room\/([a-f0-9]+)$/.exec(location.pathname)?.[1];
-let state; let receivedAt = 0; let currentMedia = ''; let mediaVersion = -1; let hls; let enabled = false; let events; let applying = false;
+let state; let receivedAt = 0; let currentMedia = ''; let mediaVersion = -1; let hls; let dash; let enabled = false; let events; let applying = false; let controlBusy = false; let episodeBusy = false; let episodeSignature = '';
 let chatBusy = false; let sending = false; let lastMessages = ''; let pendingSend; let scrollAfterSend = false; let noticeTimer;
 function notice(text, error = false) { clearTimeout(noticeTimer); $('notice').textContent = text; $('notice').hidden = !text; $('notice').classList.toggle('error', error); if (text && !error) noticeTimer = setTimeout(() => { $('notice').hidden = true; }, 3500); }
 const time = value => { const seconds = Math.max(0, Math.floor(value || 0)); return `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`; };
 async function api(url, body) {
-  const response = await fetch(url, { method: body === undefined ? 'GET' : 'POST', signal: AbortSignal.timeout(15000), headers: { 'Content-Type': 'application/json', 'X-Watch-Request': '1', 'X-Watch-Room': room || '' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const response = await fetch(url, { method: body === undefined ? 'GET' : 'POST', signal: AbortSignal.timeout(url === '/api/media' ? 45000 : 15000), headers: { 'Content-Type': 'application/json', 'X-Watch-Request': '1', 'X-Watch-Room': room || '' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const result = await response.json();
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) { video.pause(); enabled = false; }
@@ -38,13 +38,20 @@ function receive(next) {
   $('toggle').textContent = next.paused ? '▶' : 'Ⅱ'; $('toggle').setAttribute('aria-label', next.paused ? '播放' : '暂停');
   $('toggle').disabled = $('seek').disabled = !next.canControl || !next.media;
   $('join').hidden = enabled || !next.media;
+  renderEpisodes();
   const source = next.media?.url || '';
   if (source !== currentMedia || (next.mediaVersion || 0) !== mediaVersion) {
-    currentMedia = source; mediaVersion = next.mediaVersion || 0; notice('');
-    hls?.destroy(); hls = null; video.pause(); video.removeAttribute('src'); video.load();
+    currentMedia = source; mediaVersion = next.mediaVersion || 0; notice(''); video.poster = next.media?.cover || '';
+    hls?.destroy(); hls = null; dash?.reset(); dash = null; video.pause(); video.removeAttribute('src'); video.load();
     $('empty').hidden = !!source;
     if (source) {
-      if (next.media.kind === 'hls' && Hls.isSupported()) {
+      if (next.media.kind === 'dash') {
+        if (typeof dashjs === 'undefined') { notice('播放器未就绪，请刷新后重试。', true); return; }
+        dash = dashjs.MediaPlayer().create();
+        dash.updateSettings({ streaming: { buffer: { bufferTimeDefault: 30 } } });
+        dash.on(dashjs.MediaPlayer.events.ERROR, event => { if (event.error) notice('影片加载失败，请重试或更换片源。', true); });
+        dash.initialize(video, source, false);
+      } else if (next.media.kind === 'hls' && typeof Hls !== 'undefined' && Hls.isSupported()) {
         hls = new Hls({ maxBufferLength: 30, maxMaxBufferLength: 60 }); hls.loadSource(source); hls.attachMedia(video);
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (data.fatal) { console.warn('HLS playback failed', data.details, data.response?.code || ''); notice('影片加载失败，请更换片源或使用本地媒体。', true); }
@@ -55,15 +62,66 @@ function receive(next) {
   synchronize();
 }
 async function action(action, extra = {}) {
-  try { await api('/api/control', { action, revision: state.revision, ...extra }); }
+  if (controlBusy || !state?.canControl || !state.media || episodeBusy) return;
+  controlBusy = true;
+  try { await api('/api/control', { action, revision: state.revision, ...extra }); receive(await api('/api/state')); }
   catch (error) { receive(await api('/api/state')); throw error; }
+  finally { controlBusy = false; }
 }
 function unlock() {
   enabled = true; $('join').hidden = true;
   return video.play().then(synchronize).catch(() => { enabled = false; $('join').hidden = false; });
 }
-$('join').onclick = unlock;
-$('toggle').onclick = () => { if (!enabled && state?.paused) void unlock(); attempt(() => action(state.paused ? 'play' : 'pause')); };
+function togglePlayback() {
+  if (!state?.media || controlBusy || episodeBusy) return;
+  if (!state.canControl) { if (!enabled) void unlock(); return; }
+  const command = state.paused ? 'play' : 'pause';
+  if (command === 'play' && !enabled) {
+    enabled = true; $('join').hidden = true;
+    video.play().catch(() => { enabled = false; $('join').hidden = false; });
+  }
+  attempt(() => action(command));
+}
+$('join').onclick = () => state?.canControl && state.paused ? togglePlayback() : unlock();
+$('toggle').onclick = togglePlayback;
+video.addEventListener('click', togglePlayback);
+function adjacentEpisode(direction) {
+  const episodes = state?.media?.episodes || []; const index = state?.media?.episodeIndex || 0;
+  const next = index + direction;
+  return episodes[next] && episodes[next].group === episodes[index]?.group ? next : -1;
+}
+$('previous-episode').onclick = () => attempt(() => selectEpisode(adjacentEpisode(-1)));
+$('next-episode').onclick = () => attempt(() => selectEpisode(adjacentEpisode(1)));
+function renderEpisodes() {
+  const episodes = state?.media?.episodes || []; const index = state?.media?.episodeIndex || 0;
+  $('episode-panel').hidden = !episodes.length;
+  $('episode-panel').setAttribute('aria-busy', String(episodeBusy));
+  const groupCount = new Set(episodes.map(episode => episode.group || '')).size;
+  const groupEpisodes = episodes.filter(episode => episode.group === episodes[index]?.group).length;
+  $('episode-count').textContent = groupCount > 1 ? `${groupEpisodes} 集 · ${groupCount} 条线路` : `${episodes.length}`;
+  $('previous-episode').disabled = episodeBusy || !state?.canControl || adjacentEpisode(-1) < 0;
+  $('next-episode').disabled = episodeBusy || !state?.canControl || adjacentEpisode(1) < 0;
+  const signature = JSON.stringify([episodes, index, state?.canControl, episodeBusy]);
+  if (signature === episodeSignature) return; episodeSignature = signature;
+  $('episodes').replaceChildren();
+  let previousGroup;
+  episodes.forEach((episode, position) => {
+    if (episode.group && episode.group !== previousGroup) { const heading = document.createElement('div'); heading.className = 'episode-group'; heading.textContent = episode.group; $('episodes').append(heading); previousGroup = episode.group; }
+    const button = document.createElement('button'); button.textContent = episode.title || `第 ${position + 1} 集`;
+    button.className = position === index ? 'episode active' : 'episode'; button.title = episode.group ? `${episode.group} · ${button.textContent}` : button.textContent;
+    button.setAttribute('aria-current', position === index ? 'true' : 'false');
+    button.disabled = episodeBusy || !state.canControl || position === index;
+    button.onclick = () => attempt(() => selectEpisode(position)); $('episodes').append(button);
+  });
+}
+async function selectEpisode(index) {
+  const episode = state?.media?.episodes?.[index];
+  if (!episode || !state.canControl || episodeBusy || controlBusy || index === state.media.episodeIndex) return;
+  episodeBusy = true; renderEpisodes();
+  try { const result = await api('/api/media', { mode: 'online', url: episode.url, revision: state.revision }); receive(await api('/api/state')); if (result.warning) notice(result.warning, true); }
+  catch (error) { receive(await api('/api/state')); throw error; }
+  finally { episodeBusy = false; renderEpisodes(); }
+}
 $('seek').onchange = event => attempt(() => action('seek', { position: Number(event.target.value) }));
 $('volume').oninput = event => { video.volume = Number(event.target.value); };
 $('fullscreen').onclick = () => attempt(() => video.requestFullscreen ? video.requestFullscreen() : video.webkitEnterFullscreen?.());
