@@ -1,7 +1,7 @@
 services:
   watch:
-    build: .
-    image: fiora-watch:local
+    image: ${WATCH_IMAGE:-ghcr.io/ichinose520122/fiora-watch:latest}
+    pull_policy: always
     restart: unless-stopped
     init: true
     ports:

@@ -1,4 +1,6 @@
 FROM node:24-alpine
+LABEL org.opencontainers.image.source="https://github.com/Ichinose520122/fiora-watch"
+LABEL org.opencontainers.image.description="Independent watch-together cinema for Fiora"
 WORKDIR /app
 RUN npm install --global pnpm@11.25.0
 COPY package.json pnpm-lock.yaml ./

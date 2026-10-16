@@ -16,16 +16,40 @@
 
 ## 部署
 
-需要 Docker Compose、一个 HTTPS 域名。首次先从源码构建；CI 会验证镜像，不自动发布或部署生产环境。
+需要 Docker Compose、一个 HTTPS 域名。默认使用预构建镜像，无需在服务器安装 Node.js 或构建源码。
+
+- 镜像：`ghcr.io/ichinose520122/fiora-watch:latest`（Linux / amd64，与 Fiora 当前镜像平台一致）。
+- [Compose 文件](https://github.com/Ichinose520122/fiora-watch/blob/main/compose.yaml) · [直接下载 Compose](https://raw.githubusercontent.com/Ichinose520122/fiora-watch/main/compose.yaml) · [环境变量示例](https://github.com/Ichinose520122/fiora-watch/blob/main/.env.example)
+- [镜像与标签](https://github.com/Ichinose520122/fiora-watch/pkgs/container/fiora-watch) · [构建状态](https://github.com/Ichinose520122/fiora-watch/actions/workflows/ci.yml)
+
+首次部署可只下载配置文件，在新的部署目录中执行：
+
+```sh
+mkdir -p fiora-watch
+cd fiora-watch
+curl -fLO https://raw.githubusercontent.com/Ichinose520122/fiora-watch/main/compose.yaml
+curl -fLO https://raw.githubusercontent.com/Ichinose520122/fiora-watch/main/.env.example
+```
+
+如果已经克隆仓库，直接在原目录继续，保持原目录和 Compose 项目名，以复用现有数据卷。创建配置并启动：
 
 ```sh
 cp .env.example .env
 mkdir -p library
 openssl rand -hex 32
 # 编辑 .env，填写真实域名及上一步生成的专用密钥。
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose logs -f watch
 ```
+
+已有 `.env` 时保留原文件，不要再次复制覆盖。GitHub 新建容器包默认为私有；如果拉取提示 `denied`，先执行 `docker login ghcr.io -u Ichinose520122`，密码输入拥有 `read:packages` 权限的个人访问令牌（classic），或在包设置中将镜像设为公开后匿名拉取。不要把令牌填入 Compose 或提交到仓库。[GitHub 容器仓库说明](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
+
+以后更新，在原部署目录执行 `docker compose pull` 和 `docker compose up -d`。不要使用 `down -v`，以免删除影院数据卷。`WATCH_IMAGE` 可固定为 `ghcr.io/ichinose520122/fiora-watch:sha-完整提交SHA` 或 `ghcr.io/ichinose520122/fiora-watch@sha256:镜像摘要`，便于回滚。
+
+`main` 的代码通过测试后自动发布 `latest`、`main` 和 `sha-完整提交SHA` 标签，再用仓库 Compose 拉取发布的精确摘要并进行启动健康检查。PR 只测试，不发布镜像。自动流程不会连接或部署你的生产服务器。
+
+需要自行构建时，在完整源码目录使用 `docker compose -f compose.yaml -f compose.build.yaml up -d --build`。
 
 `WATCH_PUBLIC_URL` 填影院公开地址，`FIORA_ORIGIN` 填 Fiora 地址，均为域名根路径，例如 `https://watch.example.com`。不支持安装在 `/watch` 子路径。两端时钟应同步。
 

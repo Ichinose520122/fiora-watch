@@ -1,0 +1,5 @@
+services:
+  watch:
+    build: .
+    image: fiora-watch:local
+    pull_policy: build
