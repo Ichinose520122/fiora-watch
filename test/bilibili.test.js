@@ -47,7 +47,9 @@ test('DASH manifest preserves SegmentBase and uses only same-origin video/audio 
 
 test('Bilibili rejects paid, DRM, unsafe CDN and invalid byte indexes', async () => {
   await assert.rejects(resolveBilibili(bvid, [], reader(undefined, { ...view, rights: { pay: 1 } })), /登录、付费/);
-  for (const item of [track('video', { baseUrl: 'https://127.0.0.1/a.m4s' }), track('video', { SegmentBase: { Initialization: '0-999', indexRange: '900-1100' } }), track('video', { drm: true })]) {
+  const overseas = await resolveBilibili(bvid, [], reader({ dash: { duration: 30, video: [track('video', { baseUrl: 'https://upos-hz-mirrorakam.akamaized.net/upgcxcode/video.m4s' })], audio: [track('audio')] } }));
+  assert.equal(new URL(overseas.bilibili.tracks[0].url).hostname, 'upos-hz-mirrorakam.akamaized.net');
+  for (const item of [track('video', { baseUrl: 'https://127.0.0.1/a.m4s' }), track('video', { baseUrl: 'https://other-customer.akamaized.net/a.m4s' }), track('video', { SegmentBase: { Initialization: '0-999', indexRange: '900-1100' } }), track('video', { drm: true })]) {
     await assert.rejects(resolveBilibili(bvid, [], reader({ dash: { duration: 30, video: [item], audio: [track('audio')] } })));
   }
   for (const range of ['bytes=0-99', 'bytes=100-', 'bytes=-500']) assert.equal(validateByteRange(range), range);

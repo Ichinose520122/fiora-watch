@@ -3,7 +3,9 @@ import { allowedUrl, fetchText, requestPublic } from './network.js';
 // These domains belong to the supported provider, independent of custom source settings.
 const SITE_HOSTS = Object.freeze(['www.bilibili.com', 'bilibili.com', 'm.bilibili.com', 'b23.tv']);
 const API_HOSTS = Object.freeze(['api.bilibili.com']);
-const CDN_HOSTS = Object.freeze(['*.bilivideo.com']);
+// Exact overseas hostname observed in the official anonymous playurl response.
+// Do not allow other Akamai customer domains or a wildcard for akamaized.net.
+const CDN_HOSTS = Object.freeze(['*.bilivideo.com', 'upos-hz-mirrorakam.akamaized.net']);
 const COVER_HOSTS = Object.freeze(['i0.hdslb.com', 'i1.hdslb.com', 'i2.hdslb.com']);
 const HEADERS = Object.freeze({
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
