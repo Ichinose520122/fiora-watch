@@ -221,13 +221,15 @@ export async function resolveBilibili(input, _hosts, read = fetchText) {
 
 const xml = value => String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[character]);
 
-export function buildBilibiliManifest(media, trackUrl) {
+export function buildBilibiliManifest(media, trackUrl, { direct = false } = {}) {
   if (media.kind !== 'dash' || !media.bilibili?.tracks?.length) throw new Error('没有有效的B站 DASH 清单');
   const adaptations = ['video', 'audio'].map(type => {
     const representations = media.bilibili.tracks.map((track, index) => {
       if (track.type !== type) return '';
-      const local = trackUrl(track, index);
-      if (typeof local !== 'string' || !local.startsWith('/') || local.startsWith('//') || /[\\\r\n]/.test(local) || new URL(local, 'https://watch.invalid').origin !== 'https://watch.invalid') throw new Error('B站媒体代理必须使用同源路径');
+      // Direct mode puts validated provider URLs in the manifest itself, avoiding
+      // an extra Watch request/redirect for every initialization and media range.
+      const local = direct ? mediaUrl(track.url) : trackUrl(track, index);
+      if (!direct && (typeof local !== 'string' || !local.startsWith('/') || local.startsWith('//') || /[\\\r\n]/.test(local) || new URL(local, 'https://watch.invalid').origin !== 'https://watch.invalid')) throw new Error('B站媒体代理必须使用同源路径');
       const dimensions = type === 'video' ? ` width="${track.width}" height="${track.height}"${track.frameRate ? ` frameRate="${xml(track.frameRate)}"` : ''}` : '';
       return `<Representation id="${xml(track.id)}" bandwidth="${track.bandwidth}" codecs="${xml(track.codecs)}"${dimensions}><BaseURL>${xml(local)}</BaseURL><SegmentBase indexRange="${segmentRange(track.indexRange)}" indexRangeExact="true"><Initialization range="${segmentRange(track.initialization)}"/></SegmentBase></Representation>`;
     }).join('');

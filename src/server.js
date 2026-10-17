@@ -33,13 +33,13 @@ export function createApp(config, dependencies = {}) {
   const listSubtitles = dependencies.listSubtitles || (media => listBilibiliSubtitles({ ...media.bilibili, source: media.source }, readBilibili));
   const fetchSubtitle = dependencies.fetchSubtitle || fetchBilibiliSubtitle;
   let subtitleCache = new WeakMap();
-  const playbackSettings = () => ({ bilibiliDelivery: store.data.settings?.bilibiliDelivery === 'direct' ? 'direct' : 'proxy' });
+  const playbackSettings = () => ({ bilibiliDelivery: store.data.settings?.bilibiliDelivery === 'proxy' ? 'proxy' : 'direct' });
   const refreshing = new Map();
   const invitationUpdates = new Map();
   app.disable('x-powered-by');
   app.use((_req, res, next) => {
     res.set({ 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; media-src 'self' https: blob:; connect-src 'self' https:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'" }); next();
+      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; media-src 'self' https: blob:; connect-src 'self' https:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'" }); next();
   });
   app.get('/health', (_req, res) => res.json({ ok: true }));
   app.use(express.json({ limit: '128kb' }));
@@ -117,6 +117,7 @@ export function createApp(config, dependencies = {}) {
       media.provider = 'bilibili';
       media.playbackMode = media.playbackMode === 'direct' ? 'direct' : 'proxy';
       media.url = base + (media.playbackMode === 'direct' ? '&delivery=direct' : '');
+      if (media.playbackMode === 'direct' && media.kind === 'mp4') media.url = mediaUrl(bilibili.tracks[0].url);
       if (media.playbackMode === 'direct') media.fallbackUrl = base + '&delivery=proxy';
       const labels = { 6: '240P', 16: '360P', 32: '480P', 64: '720P', 74: '720P 60帧', 80: '1080P', 112: '1080P 高码率', 116: '1080P 60帧', 120: '4K', 125: 'HDR', 126: '杜比视界', 127: '8K' };
       media.qualities = bilibili.tracks.filter(track => track.type === 'video').map(track => ({ id: track.id, representationId: track.id, label: labels[track.quality] || `${Math.min(track.width, track.height)}P`, width: track.width, height: track.height, frameRate: track.frameRate }));
@@ -142,7 +143,7 @@ export function createApp(config, dependencies = {}) {
   };
   app.get('/api/bilibili/manifest', roomAccess, bilibiliAccess, (req, res) => {
     const delivery = req.room.media.playbackMode === 'direct' && req.query.delivery === 'direct' ? 'direct' : undefined;
-    res.type('application/dash+xml').send(buildBilibiliManifest(req.room.media, (_track, index) => trackPath(req.room, index, delivery)));
+    res.type('application/dash+xml').send(buildBilibiliManifest(req.room.media, (_track, index) => trackPath(req.room, index), { direct: delivery === 'direct' }));
   });
   async function subtitlesFor(media) {
     let cached = subtitleCache.get(media);
@@ -204,6 +205,9 @@ export function createApp(config, dependencies = {}) {
       if (req.grant.expires <= Date.now() || req.room.media !== media) { upstream.response.destroy(); return res.sendStatus(403); }
       const response = upstream.response;
       res.status(response.statusCode).type(media.bilibili.tracks[index].mimeType);
+      // Keep range responses streaming through reverse proxies without buffering
+      // or transforming the byte representation used by DASH SegmentBase.
+      res.set({ 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store, no-transform' });
       for (const name of ['content-length', 'content-range', 'accept-ranges']) if (response.headers[name]) res.set(name, response.headers[name]);
       if (response.statusCode === 416 || req.method === 'HEAD') { response.destroy(); if (response.statusCode === 416) res.set('Content-Length', '0'); return res.end(); }
       await pipeline(response, res);

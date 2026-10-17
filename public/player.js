@@ -13,13 +13,14 @@ export function sameOriginTrack(value, origin) {
   catch { return null; }
 }
 
-export function createPlayer({ video, document: doc = document, subtitles, notify }) {
+export function createPlayer({ video, document: doc = document, subtitles, notify, atom }) {
   const element = id => doc.getElementById(id);
   const shell = element('player-shell');
   const menuSignatures = new Map();
   let generation = 0; let media; let hls; let dash; let externalTrack; let subtitleRequest;
   let quality = 'auto'; let subtitle = 'off'; let backendSubtitles = []; let subtitleState = ''; let ready = false; let error = false; let hideTimer;
   let qualityItems = []; let subtitleItems = []; let changingSubtitle = false; let pendingSubtitle = 'off';
+  let keyboardInput = false; let pointerControls = false; let pointerPressed = false;
 
   function loading(text = '') {
     element('player-loading').hidden = !text; element('loading-text').textContent = text;
@@ -27,7 +28,10 @@ export function createPlayer({ video, document: doc = document, subtitles, notif
   }
   function reveal() {
     shell.classList.remove('controls-idle'); clearTimeout(hideTimer);
-    if (!video.paused && !video.ended && !doc.activeElement?.closest('.player-controls') && !shell.querySelector('.player-menu:not([hidden])')) hideTimer = setTimeout(() => shell.classList.add('controls-idle'), 2800);
+    const keyboardControls = keyboardInput && Boolean(doc.activeElement?.closest('.player-controls, .atom-controls'));
+    shell.classList.toggle('controls-keyboard', keyboardControls);
+    if (atom && !atom.player.error) atom.player.hover = true;
+    if (!video.paused && !video.ended && !keyboardControls && !pointerControls && !pointerPressed && !shell.querySelector('.player-menu:not([hidden])')) hideTimer = setTimeout(() => { shell.classList.add('controls-idle'); if (atom) atom.player.hover = false; }, 2800);
   }
   function closeMenus() {
     for (const name of ['quality', 'subtitle']) { element(`${name}-menu`).hidden = true; element(`${name}-button`).setAttribute('aria-expanded', 'false'); }
@@ -158,14 +162,15 @@ export function createPlayer({ video, document: doc = document, subtitles, notif
     element(`${name}-button`).onclick = () => { const open = element(`${name}-menu`).hidden; closeMenus(); element(`${name}-menu`).hidden = !open; element(`${name}-button`).setAttribute('aria-expanded', String(open)); if (open) element(`${name}-options`).querySelector('button')?.focus(); reveal(); };
     element(`${name}-menu`).onkeydown = event => {
       const buttons = Array.from(element(`${name}-options`).querySelectorAll('button')); const index = buttons.indexOf(doc.activeElement);
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); buttons[(index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus(); }
-      if (event.key === 'Escape') { event.preventDefault(); closeMenus(); element(`${name}-button`).focus(); }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); event.stopPropagation(); buttons[(index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus(); }
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeMenus(); element(`${name}-button`).focus(); }
     };
   }
   doc.addEventListener('click', event => { if (!event.target.closest('.player-setting')) closeMenus(); });
-  doc.addEventListener('keydown', event => { if (event.key === 'Escape') { closeMenus(); if (shell.classList.contains('web-fullscreen')) toggleFullscreen(); } });
+  doc.addEventListener('keydown', event => { keyboardInput = true; reveal(); if (event.key === 'Escape') { closeMenus(); if (shell.classList.contains('web-fullscreen')) toggleFullscreen(); } });
   function updateFullscreen() {
     const full = doc.fullscreenElement === shell || doc.webkitFullscreenElement === shell || shell.classList.contains('web-fullscreen');
+    pointerControls = false; pointerPressed = false;
     element('fullscreen').setAttribute('aria-label', full ? '退出全屏' : '全屏'); element('fullscreen').setAttribute('aria-pressed', String(full)); reveal();
   }
   async function toggleFullscreen() {
@@ -181,11 +186,15 @@ export function createPlayer({ video, document: doc = document, subtitles, notif
   }
   element('fullscreen').onclick = toggleFullscreen;
   doc.addEventListener('fullscreenchange', updateFullscreen); doc.addEventListener('webkitfullscreenchange', updateFullscreen);
-  for (const name of ['pointermove', 'pointerdown', 'focusin']) shell.addEventListener(name, reveal);
+  shell.addEventListener('pointermove', event => { keyboardInput = false; pointerControls = Boolean(event.target.closest('.player-controls, .atom-controls')); reveal(); });
+  shell.addEventListener('pointerdown', event => { keyboardInput = false; pointerPressed = true; pointerControls = Boolean(event.target.closest('.player-controls, .atom-controls')); reveal(); });
+  shell.addEventListener('pointerleave', () => { pointerControls = false; reveal(); });
+  for (const name of ['pointerup', 'pointercancel']) doc.addEventListener(name, () => { if (pointerPressed) { pointerPressed = false; reveal(); } });
+  for (const name of ['focusin', 'focusout']) shell.addEventListener(name, reveal);
   for (const name of ['loadstart', 'waiting', 'seeking']) video.addEventListener(name, () => { if (media && !error) loading(ready ? '正在缓冲…' : '正在加载影片…'); reveal(); });
   for (const name of ['loadeddata', 'canplay', 'playing', 'seeked']) video.addEventListener(name, () => { ready = true; loading(''); renderQuality(); renderSubtitles(); reveal(); });
   for (const name of ['pause', 'ended']) video.addEventListener(name, () => { loading(''); reveal(); });
   video.addEventListener('loadedmetadata', () => { renderQuality(); renderSubtitles(); });
   video.textTracks.addEventListener('addtrack', event => { if (!changingSubtitle) { if (subtitle === 'off') event.track.mode = 'disabled'; renderSubtitles(); } });
-  return { begin(next, version, options) { element('player-error').hidden = true; return begin(next, version, options); }, attachDash, attachHls, fail, loading, reveal };
+  return { begin(next, version, options) { element('player-error').hidden = true; return begin(next, version, options); }, attachDash, attachHls, fail, loading, reveal, toggleFullscreen };
 }

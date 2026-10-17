@@ -39,6 +39,8 @@ test('delivery setting requires admin/CSRF, persists and applies only to the nex
   assert.equal((await call('/api/settings/playback', viewer, { bilibiliDelivery: 'direct' })).status, 403);
   assert.equal((await call('/api/settings/playback', admin, { bilibiliDelivery: 'direct' }, { Origin: 'https://evil.example' })).status, 403);
   assert.equal((await call('/api/settings/playback', admin, { bilibiliDelivery: 'evil' })).status, 400);
+  assert.equal((await (await call('/api/settings/playback', admin)).json()).bilibiliDelivery, 'direct');
+  await call('/api/settings/playback', admin, { bilibiliDelivery: 'proxy' });
   await call('/api/media', admin, { mode: 'online', url: media.source, revision: 0 });
   let state = await (await call('/api/state', viewer)).json();
   assert.equal(state.media.playbackMode, 'proxy'); assert.equal(state.position, 0); assert.equal(state.paused, true);
@@ -51,7 +53,9 @@ test('delivery setting requires admin/CSRF, persists and applies only to the nex
   assert.equal(state.media.playbackMode, 'direct'); assert.equal(state.position, 0);
   assert.equal(state.paused, true); assert.equal(state.media.qualities[0].label, '1080P');
   assert.doesNotMatch(JSON.stringify(state), /secret=private|bilibili":|login_mid/);
-  const manifest = await (await call(state.media.url, viewer)).text(); assert.match(manifest, /delivery=direct/);
+  const manifest = await (await call(state.media.url, viewer)).text();
+  assert.match(manifest, /https:\/\/example\.bilivideo\.com\/video\.m4s/);
+  assert.doesNotMatch(manifest, /\/api\/bilibili\/track/);
   const directPath = `/api/bilibili/track?room=${room}&version=3&track=0&delivery=direct`;
   const direct = await call(directPath, viewer); assert.equal(direct.status, 302); assert.equal(direct.headers.get('location'), media.bilibili.tracks[0].url);
   assert.equal((await call(directPath, '')).status, 401);

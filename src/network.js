@@ -4,6 +4,10 @@ import https from 'node:https';
 import { createGunzip, createInflate, createBrotliDecompress } from 'node:zlib';
 import ipaddr from 'ipaddr.js';
 
+const DNS_CACHE_MS = 15000;
+const DNS_CACHE_MAX = 256;
+const publicDns = new Map();
+
 export function publicAddress(value) {
   try {
     let address = ipaddr.parse(value);
@@ -22,12 +26,40 @@ export function allowedUrl(value, hosts) {
   return url;
 }
 
+async function publicAddresses(hostname) {
+  const cached = publicDns.get(hostname);
+  if (cached?.expires > Date.now()) return cached.addresses;
+  if (cached?.pending) return cached.pending;
+  // Audio/video ranges often arrive together. Share one lookup and retain only
+  // positively validated public results briefly; never cache DNS errors.
+  const entry = { pending: dns.lookup(hostname, { all: true }).then(addresses => {
+    if (!addresses.length || addresses.some(item => !publicAddress(item.address))) throw new Error('禁止访问内网或保留地址');
+    return addresses;
+  }) };
+  if (publicDns.size >= DNS_CACHE_MAX) publicDns.delete(publicDns.keys().next().value);
+  publicDns.set(hostname, entry);
+  try {
+    const addresses = await entry.pending;
+    if (publicDns.get(hostname) === entry) {
+      entry.addresses = addresses; entry.expires = Date.now() + DNS_CACHE_MS;
+      delete entry.pending;
+    }
+    return addresses;
+  } catch (error) {
+    if (publicDns.get(hostname) === entry) publicDns.delete(hostname);
+    throw error;
+  }
+}
+
 // Pin the validated DNS answer to the actual connection; validate every redirect.
 export async function requestPublic(value, hosts, signal, options = {}, redirects = 0) {
   // Keep the original fourth numeric redirect argument compatible.
   if (typeof options === 'number') { redirects = options; options = {}; }
   const url = allowedUrl(value, hosts);
-  const addresses = await dns.lookup(url.hostname, { all: true });
+  signal?.throwIfAborted();
+  const addresses = await publicAddresses(url.hostname);
+  signal?.throwIfAborted();
+  // Recheck cached answers too; the connection still uses only this pinned IP.
   if (!addresses.length || addresses.some(item => !publicAddress(item.address))) throw new Error('禁止访问内网或保留地址');
   const address = addresses[0];
   const response = await new Promise((resolve, reject) => {

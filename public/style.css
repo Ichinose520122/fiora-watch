@@ -125,7 +125,7 @@ video{cursor:pointer}
 body.player-fullscreen{overflow:hidden}
 .player-shell:fullscreen .screen,.player-shell:-webkit-full-screen .screen,.player-shell.web-fullscreen .screen{width:100%;height:100%;aspect-ratio:auto;border:0;border-radius:0;min-height:0;background:#000}
 .player-shell:fullscreen .player-controls,.player-shell:-webkit-full-screen .player-controls,.player-shell.web-fullscreen .player-controls{position:absolute;left:0;right:0;bottom:0;padding:18px max(20px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(20px,env(safe-area-inset-left));background:linear-gradient(transparent,#080b15e6 45%);border:0;border-radius:0;transition:opacity .2s}
-.player-shell:fullscreen.controls-idle:not(:focus-within) .player-controls,.player-shell:-webkit-full-screen.controls-idle:not(:focus-within) .player-controls,.player-shell.web-fullscreen.controls-idle:not(:focus-within) .player-controls{opacity:0;pointer-events:none}
+.player-shell:fullscreen.controls-idle:not(.controls-keyboard) .player-controls,.player-shell:-webkit-full-screen.controls-idle:not(.controls-keyboard) .player-controls,.player-shell.web-fullscreen.controls-idle:not(.controls-keyboard) .player-controls{opacity:0;pointer-events:none}
 .player-shell:fullscreen.controls-idle,.player-shell.web-fullscreen.controls-idle{cursor:none}
 .player-shell:fullscreen .player-menu,.player-shell.web-fullscreen .player-menu{bottom:calc(100% + 20px)}
 @media(max-width:760px){.player-shell .player-controls{padding:0 9px 5px}.player-shell .transport{gap:4px}.player-shell #time{font-size:9px;white-space:nowrap}.player-shell .volume{gap:5px}.player-shell .volume input{width:42px}.setting-button{font-size:10px;padding:7px 6px}.player-shell .icon-button{padding:7px}.player-menu{min-width:180px}.player-loading{font-size:11px;gap:9px}.loading-spinner{width:26px;height:26px}.player-shell:fullscreen .transport,.player-shell.web-fullscreen .transport{min-height:46px}}
@@ -148,3 +148,35 @@ body.player-fullscreen{overflow:hidden}
 #playback-settings select{flex:1;min-width:0;max-width:100%;border:1px solid #a9b8e126;border-radius:9px;background:#0f1728;color:var(--ink);padding:12px 14px;font:inherit;color-scheme:dark}
 #playback-settings option{background:#151d2e}
 @media(max-width:760px){.episode-choice{gap:5px;padding:3px 5px}.episode-choice>.episode{font-size:10px}.download-job pre{max-height:150px}#playback-settings select{width:100%}}
+
+.delivery-status{position:absolute;left:15px;top:13px;z-index:2;padding:4px 9px;border-radius:5px;background:#080c15a8;color:#d5d0df;font-size:10px;line-height:1.6;pointer-events:none;transition:opacity .2s}
+.player-shell.controls-idle .delivery-status{opacity:0}
+
+/* The actual Atom UI shares Watch's media engines and fullscreen surface. */
+#atom-mount{position:absolute;inset:0;width:100%;height:100%}
+.player-shell.uses-atom>.player-controls{display:none}
+.player-shell.uses-atom .atom-player{height:100%;font-family:system-ui,sans-serif;--color:#00a1d6}
+.player-shell.uses-atom .atom-video{height:100%;min-height:0;flex:1;background:#000}
+.player-shell.uses-atom video{position:absolute;inset:0;width:100%!important;height:100%!important;margin:0!important;object-fit:contain!important}
+.player-shell.uses-atom .atom-emitter,.player-shell.uses-atom .atom-danmu-emitter,.player-shell.uses-atom .atom-danmu-switch,.player-shell.uses-atom .atom-danmu-setting,.player-shell.uses-atom .atom-danmuku,.player-shell.uses-atom .atom-control-playBackRate{display:none!important}
+.player-shell.uses-atom .atom-controls{z-index:5;transition:opacity .2s}
+.player-shell.uses-atom:not(.controls-idle) .atom-controls{opacity:1;visibility:visible;transform:none;pointer-events:auto}
+.player-shell.uses-atom:not(.controls-idle) .atom-video-controls,.player-shell.uses-atom:not(.controls-idle) .atom-video-controls-background{opacity:1;pointer-events:auto}
+.player-shell.uses-atom:not(.controls-idle) .atom-video-progress{opacity:1;transform:translateY(0);padding:0 10px;pointer-events:auto}
+.player-shell.uses-atom.controls-idle:not(.controls-keyboard) .atom-controls,.player-shell.uses-atom.controls-idle:not(.controls-keyboard) .atom-video-progress{opacity:0!important;visibility:hidden!important;pointer-events:none!important}
+.player-shell.uses-atom.controls-idle{cursor:none}
+.player-shell.uses-atom .atom-controls-right{gap:3px;overflow:visible}
+.player-shell.uses-atom .setting-button{font-size:12px;color:#fff;padding:7px 9px;min-height:32px}
+.player-shell.uses-atom .setting-button.selected,.player-shell.uses-atom #danmaku-toggle[aria-pressed=true]{color:#6ed4ff}
+.player-shell.uses-atom .player-setting{overflow:visible}
+.player-shell.uses-atom .player-menu{z-index:10;bottom:calc(100% + 12px);font-family:system-ui,sans-serif}
+.player-shell.uses-atom .player-menu button,.player-shell.uses-atom .player-menu p{white-space:normal}
+.player-shell.uses-atom .player-error{z-index:22}
+.player-shell.uses-atom .join-overlay{z-index:21}
+.player-shell.uses-atom #empty{z-index:20}
+.player-shell.uses-atom .player-loading{z-index:20}
+.player-shell.uses-atom.room-readonly .atom-control-progress,.player-shell.uses-atom.room-readonly .atom-video-progress{pointer-events:none;opacity:.65}
+.player-shell.uses-atom.room-empty .atom-controls{visibility:hidden;pointer-events:none}
+.player-shell.uses-atom .atom-layer-setting,.player-shell.uses-atom .atom-control-setting,.player-shell.uses-atom .atom-icon.setting{display:none!important}
+@media(max-width:760px){.player-shell.uses-atom .atom-controls-right{gap:0}.player-shell.uses-atom .setting-button{font-size:10px;padding:6px 5px}.player-shell.uses-atom .atom-controls-left{flex-shrink:0}.player-shell.uses-atom .player-menu{min-width:170px;max-height:45vh}}
+@media(prefers-reduced-motion:reduce){.player-shell.uses-atom .atom-controls{transition:none}}

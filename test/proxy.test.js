@@ -57,6 +57,7 @@ test('Bilibili proxy scopes tracks to the room/version and never exposes upstrea
   const now = Math.floor(Date.now() / 1000);
   const login = await call('/api/session', { ticket: signTicket({ v: 1, iss: config.issuer, aud: config.audience, iat: now, exp: now + 60, jti: '1'.repeat(32), sub: 'a'.repeat(24), room, name: 'demo', canControl: true, admin: true }, secret) });
   cookie = login.headers.get('set-cookie').split(';')[0];
+  await call('/api/settings/playback', { bilibiliDelivery: 'proxy' });
   assert.equal((await call('/api/media?room=' + room, { mode: 'online', url: media.source, revision: 0 })).status, 200);
   assert.equal(updates[0].action, 'media'); assert.equal(updates[0].title, '番名');
   const state = await (await call('/api/state?room=' + room)).json();

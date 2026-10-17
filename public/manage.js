@@ -290,7 +290,7 @@ async function playbackSettings(save = false) {
   $('playback-settings-status').textContent = save ? '保存中…' : '读取中…';
   try {
     const result = await api('/api/settings/playback', save ? { bilibiliDelivery: $('bilibili-delivery').value } : undefined);
-    $('bilibili-delivery').value = result.bilibiliDelivery === 'direct' ? 'direct' : 'proxy';
+    $('bilibili-delivery').value = result.bilibiliDelivery === 'proxy' ? 'proxy' : 'direct';
     $('playback-settings-status').textContent = save ? '已保存，下次选片生效。' : '';
   } catch (error) { $('playback-settings-status').textContent = error.message || '设置暂不可用'; throw error; }
   finally { settingsBusy = false; $('save-playback-settings').disabled = $('bilibili-delivery').disabled = false; }

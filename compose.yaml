@@ -1,6 +1,6 @@
 services:
   watch:
-    image: ${WATCH_IMAGE:-ghcr.io/ichinose520122/fiora-watch:latest}
+    image: ghcr.io/ichinose520122/fiora-watch:latest
     pull_policy: always
     restart: unless-stopped
     init: true
