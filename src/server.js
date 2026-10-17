@@ -8,7 +8,8 @@ import { resolveMedia } from './resolver.js';
 import { loadConfig } from './config.js';
 import { createChatBridge } from './chat.js';
 import { createCatalog } from './catalog.js';
-import { isBilibiliUrl, listBilibiliEpisodes, resolveBilibili, buildBilibiliManifest, requestBilibiliTrack, authenticatedBilibiliReader } from './bilibili.js';
+import { isBilibiliUrl, listBilibiliEpisodes, resolveBilibili, buildBilibiliManifest, requestBilibiliTrack, authenticatedBilibiliReader, mediaUrl } from './bilibili.js';
+import { listBilibiliSubtitles, fetchBilibiliSubtitle } from './bilibili-subtitles.js';
 import { BilibiliAccount } from './bilibili-account.js';
 import QRCode from 'qrcode';
 import { pipeline } from 'node:stream/promises';
@@ -29,6 +30,10 @@ export function createApp(config, dependencies = {}) {
   const chat = dependencies.chat || createChatBridge(config);
   const catalog = dependencies.catalog || createCatalog(config.hosts);
   const requestTrack = dependencies.requestTrack || requestBilibiliTrack;
+  const listSubtitles = dependencies.listSubtitles || (media => listBilibiliSubtitles({ ...media.bilibili, source: media.source }, readBilibili));
+  const fetchSubtitle = dependencies.fetchSubtitle || fetchBilibiliSubtitle;
+  let subtitleCache = new WeakMap();
+  const playbackSettings = () => ({ bilibiliDelivery: store.data.settings?.bilibiliDelivery === 'direct' ? 'direct' : 'proxy' });
   const refreshing = new Map();
   const invitationUpdates = new Map();
   app.disable('x-powered-by');
@@ -37,7 +42,7 @@ export function createApp(config, dependencies = {}) {
       'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; media-src 'self' https: blob:; connect-src 'self' https:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'" }); next();
   });
   app.get('/health', (_req, res) => res.json({ ok: true }));
-  app.use(express.json({ limit: '12kb' }));
+  app.use(express.json({ limit: '128kb' }));
   const cookieId = req => /(?:^|;\s*)watch_session=([a-f0-9]{48})(?:;|$)/.exec(req.headers.cookie || '')?.[1];
   const sameOrigin = (req, res, next) => {
     if (req.headers.origin !== config.audience || req.headers['x-watch-request'] !== '1') return res.status(403).json({ error: '请求来源无效' });
@@ -72,6 +77,12 @@ export function createApp(config, dependencies = {}) {
   app.use('/api', authenticate);
   app.use('/api', (req, res, next) => req.method === 'POST' ? sameOrigin(req, res, next) : next());
   const admin = (req, res, next) => req.session.user.admin ? next() : res.status(403).json({ error: '只有站点管理员可以使用此功能' });
+  app.get('/api/settings/playback', admin, (_req, res) => res.json(playbackSettings()));
+  app.post('/api/settings/playback', admin, (req, res) => {
+    if (!['proxy', 'direct'].includes(req.body?.bilibiliDelivery)) throw new Error('请选择服务器加载或用户端直连');
+    store.data.settings = { ...store.data.settings, bilibiliDelivery: req.body.bilibiliDelivery };
+    store.save(); res.json(playbackSettings());
+  });
   app.get('/api/bilibili/account', admin, async (_req, res) => res.json(await account.publicStatus()));
   app.post('/api/bilibili/account/refresh', admin, async (req, res) => {
     throttle(`bili-refresh:${req.session.user.id}`, 6);
@@ -84,10 +95,11 @@ export function createApp(config, dependencies = {}) {
   });
   app.post('/api/bilibili/account/poll', admin, async (req, res) => {
     throttle(`bili-poll:${req.session.user.id}`, 30);
-    res.json(await account.poll(cookieId(req), req.body?.id));
+    const result = await account.poll(cookieId(req), req.body?.id);
+    subtitleCache = new WeakMap(); res.json(result);
   });
   app.post('/api/bilibili/account/logout', admin, async (_req, res) => {
-    await account.remove(); res.json(await account.publicStatus());
+    await account.remove(); subtitleCache = new WeakMap(); res.json(await account.publicStatus());
   });
   const roomAccess = (req, res, next) => {
     const roomId = req.headers['x-watch-room'] || req.query.room;
@@ -96,11 +108,19 @@ export function createApp(config, dependencies = {}) {
     if (!grant || grant.expires <= Date.now()) return res.status(403).json({ error: '没有此影院权限，请从对应聊天重新进入' });
     req.grant = grant; req.room = store.room(roomId); next();
   };
-  const trackPath = (room, index) => `/api/bilibili/track?room=${room.id}&version=${room.mediaVersion}&track=${index}`;
+  const trackPath = (room, index, delivery) => `/api/bilibili/track?room=${room.id}&version=${room.mediaVersion}&track=${index}${delivery ? `&delivery=${delivery}` : ''}`;
   const publicMedia = room => {
     if (!room.media) return null;
     const { bilibili, ...media } = room.media;
-    if (bilibili) media.url = media.kind === 'dash' ? `/api/bilibili/manifest?room=${room.id}&version=${room.mediaVersion}` : trackPath(room, 0);
+    if (bilibili) {
+      const base = media.kind === 'dash' ? `/api/bilibili/manifest?room=${room.id}&version=${room.mediaVersion}` : trackPath(room, 0);
+      media.provider = 'bilibili';
+      media.playbackMode = media.playbackMode === 'direct' ? 'direct' : 'proxy';
+      media.url = base + (media.playbackMode === 'direct' ? '&delivery=direct' : '');
+      if (media.playbackMode === 'direct') media.fallbackUrl = base + '&delivery=proxy';
+      const labels = { 6: '240P', 16: '360P', 32: '480P', 64: '720P', 74: '720P 60帧', 80: '1080P', 112: '1080P 高码率', 116: '1080P 60帧', 120: '4K', 125: 'HDR', 126: '杜比视界', 127: '8K' };
+      media.qualities = bilibili.tracks.filter(track => track.type === 'video').map(track => ({ id: track.id, representationId: track.id, label: labels[track.quality] || `${Math.min(track.width, track.height)}P`, width: track.width, height: track.height, frameRate: track.frameRate }));
+    }
     return media;
   };
   const snapshot = (room, session, grant) => ({ ...room, media: publicMedia(room), serverTime: Date.now(), user: session.user, canControl: grant.canControl, fioraUrl: config.issuer });
@@ -121,12 +141,48 @@ export function createApp(config, dependencies = {}) {
     next();
   };
   app.get('/api/bilibili/manifest', roomAccess, bilibiliAccess, (req, res) => {
-    res.type('application/dash+xml').send(buildBilibiliManifest(req.room.media, (_track, index) => trackPath(req.room, index)));
+    const delivery = req.room.media.playbackMode === 'direct' && req.query.delivery === 'direct' ? 'direct' : undefined;
+    res.type('application/dash+xml').send(buildBilibiliManifest(req.room.media, (_track, index) => trackPath(req.room, index, delivery)));
+  });
+  async function subtitlesFor(media) {
+    let cached = subtitleCache.get(media);
+    if (!cached || cached.expires <= Date.now()) {
+      cached = { expires: Date.now() + 60000, tracks: new Map(), pending: Promise.resolve().then(() => listSubtitles(media)) };
+      subtitleCache.set(media, cached);
+      cached.pending.catch(() => { if (subtitleCache.get(media) === cached) subtitleCache.delete(media); });
+    }
+    return { cached, result: await cached.pending };
+  }
+  app.get('/api/bilibili/subtitles', roomAccess, bilibiliAccess, async (req, res) => {
+    throttle(`subtitles:${req.session.user.id}`, 60);
+    const media = req.room.media; const { result } = await subtitlesFor(media);
+    if (req.room.media !== media || req.grant.expires <= Date.now()) return res.sendStatus(409);
+    res.json({ status: result.status, message: result.message, subtitles: result.subtitles.map(track => ({ id: track.id, label: track.label, language: track.language,
+      url: `/api/bilibili/subtitle?room=${req.room.id}&version=${req.room.mediaVersion}&id=${encodeURIComponent(track.id)}` })) });
+  });
+  app.get('/api/bilibili/subtitle', roomAccess, bilibiliAccess, async (req, res) => {
+    if (typeof req.query.id !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(req.query.id)) return res.sendStatus(404);
+    throttle(`subtitle-file:${req.session.user.id}`, 60);
+    const media = req.room.media; const { cached, result } = await subtitlesFor(media);
+    const track = result.subtitles.find(item => item.id === req.query.id);
+    if (!track) return res.sendStatus(404);
+    if (!cached.tracks.has(track.id)) {
+      const pending = Promise.resolve().then(() => fetchSubtitle(track)); cached.tracks.set(track.id, pending);
+      pending.catch(() => cached.tracks.delete(track.id));
+    }
+    const text = await cached.tracks.get(track.id);
+    if (req.room.media !== media || req.grant.expires <= Date.now()) return res.sendStatus(409);
+    res.type('text/vtt').send(text);
   });
   app.get('/api/bilibili/track', roomAccess, bilibiliAccess, async (req, res, next) => {
     if (typeof req.query.track !== 'string' || !/^\d{1,2}$/.test(req.query.track)) return res.sendStatus(404);
     const index = Number(req.query.track); const media = req.room.media;
     if (!media.bilibili.tracks[index]) return res.sendStatus(404);
+    if (media.playbackMode === 'direct' && req.query.delivery === 'direct') {
+      // Signed CDN links are disclosed only to an authorized viewer in explicit direct mode.
+      // Browser CORS / source restrictions may require the player's proxy fallback.
+      return res.redirect(302, mediaUrl(media.bilibili.tracks[index].url));
+    }
     const controller = new AbortController();
     const expiry = setTimeout(() => controller.abort(), Math.max(1, req.grant.expires - Date.now()));
     res.on('close', () => controller.abort());
@@ -191,6 +247,7 @@ export function createApp(config, dependencies = {}) {
       if (!media) throw new Error('本地视频不存在');
     } else if (req.body.mode !== 'clear') throw new Error('播放模式无效');
     if (req.grant.expires <= Date.now() || revision !== req.room.revision) throw new Error('房间状态已改变，请刷新后重新选择');
+    if (media?.bilibili) media.playbackMode = playbackSettings().bilibiliDelivery;
     Object.assign(req.room, { media, mediaVersion: req.room.revision + 1, paused: true, position: 0, updatedAt: Date.now(), revision: req.room.revision + 1 });
     store.save(); publish(req.room);
     // Serialize cover/title changes so a slow earlier choice cannot overwrite a newer card.
@@ -210,6 +267,7 @@ export function createApp(config, dependencies = {}) {
   app.get('/api/library', (_req, res) => res.json({ items: library.list() }));
   app.get('/api/downloads', admin, (_req, res) => res.json({ jobs: store.data.jobs, usedBytes: library.usedBytes(), quota: config.cacheBytes }));
   app.post('/api/downloads', admin, (req, res) => { throttle(`download:${req.session.user.id}`, 10); res.json(library.enqueue(req.body.url, req.session.user.id)); });
+  app.post('/api/downloads/batch', admin, (req, res) => { throttle(`download-batch:${req.session.user.id}`, 6); res.json(library.enqueueBatch(req.body.urls, req.session.user.id)); });
   app.post('/api/downloads/:id/remove', admin, (req, res) => { library.cancel(req.params.id); res.json({ ok: true }); });
   app.post('/api/logout', (req, res) => {
     account.cancel(cookieId(req));

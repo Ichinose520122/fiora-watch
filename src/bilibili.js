@@ -155,7 +155,7 @@ export async function listBilibiliEpisodes(input, _hosts, read = fetchText) {
   return { title, seriesTitle, cover, source, episodes, episodeIndex };
 }
 
-function mediaUrl(value) {
+export function mediaUrl(value) {
   const url = allowedUrl(value, CDN_HOSTS);
   if (url.protocol !== 'https:' || !/\.(?:m4s|mp4)$/i.test(url.pathname)) throw new Error('B站返回了不支持的媒体地址');
   return url.href;
@@ -183,6 +183,7 @@ function trackFrom(item, type, index) {
   const [indexStart] = track.indexRange.split('-').map(Number);
   if (initStart !== 0 || initEnd >= indexStart) throw new Error('B站 DASH 初始化与索引范围重叠');
   if (type === 'video') {
+    if (Number.isSafeInteger(item.id)) track.quality = item.id;
     if (![item.width, item.height].every(value => Number.isSafeInteger(value) && value > 0 && value <= 16384)) throw new Error('B站视频尺寸无效');
     track.width = item.width; track.height = item.height;
     const rate = String(item.frameRate || item.frame_rate || '');
@@ -196,6 +197,7 @@ export async function resolveBilibili(input, _hosts, read = fetchText) {
   const data = await api('/x/player/playurl', { bvid: info.data.bvid, cid: info.selected.cid, fnval: 144, qn: 127, fourk: 1 }, read);
   if (data.is_preview || data.drm_tech_type || data.drm_type || data.need_login || data.need_vip) throw new Error(UNSUPPORTED);
   const common = { source: info.source, title: info.episodes.length > 1 ? `${info.title} · ${info.episodes[info.episodeIndex].title}` : info.title, seriesTitle: info.title, cover: info.cover, episodes: info.episodes, episodeIndex: info.episodeIndex };
+  const identity = { bvid: info.data.bvid, cid: info.selected.cid, aid: info.data.aid };
   if (data.dash) {
     const duration = Number(data.dash.duration);
     if (!Number.isFinite(duration) || duration <= 0 || duration > 7 * 86400) throw new Error('B站视频时长无效');
@@ -205,14 +207,14 @@ export async function resolveBilibili(input, _hosts, read = fetchText) {
     if (!videos.length || !audio) throw new Error('B站没有可播放的 H.264 / AAC 音视频轨道，请使用官方播放器');
     const tracks = videos.map((item, index) => trackFrom(item, 'video', index));
     tracks.push(trackFrom(audio, 'audio', 0));
-    return { ...common, kind: 'dash', bilibili: { duration, tracks } };
+    return { ...common, kind: 'dash', bilibili: { ...identity, duration, tracks } };
   }
   // Older public videos may expose a single progressive MP4, never concatenate FLV parts.
   if (data.format?.startsWith('mp4') && data.durl?.length === 1 && !data.durl[0].ahead && !data.durl[0].vhead) {
     const duration = Number(data.timelength) / 1000;
     const url = mediaUrl(data.durl[0].url);
     if (!Number.isFinite(duration) || duration <= 0) throw new Error('B站视频时长无效');
-    return { ...common, kind: 'mp4', bilibili: { duration, tracks: [{ id: 'muxed-0', type: 'muxed', url, mimeType: 'video/mp4' }] } };
+    return { ...common, kind: 'mp4', bilibili: { ...identity, duration, tracks: [{ id: 'muxed-0', type: 'muxed', url, mimeType: 'video/mp4' }] } };
   }
   throw new Error(UNSUPPORTED);
 }

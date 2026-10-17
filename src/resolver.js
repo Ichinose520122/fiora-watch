@@ -1,5 +1,5 @@
 import { allowedUrl, fetchText } from './network.js';
-import { isCatalogUrl, parseEpisodes } from './catalog.js';
+import { isCatalogUrl, listEpisodes } from './catalog.js';
 import { isBilibiliUrl, resolveBilibili } from './bilibili.js';
 
 export function parseMacCMS(html, pageUrl) {
@@ -24,7 +24,8 @@ export async function resolveMedia(input, hosts, read = fetchText) {
   if (!/\.(m3u8|mp4)(?:\?|$)/i.test(url)) {
     let page = await read(url, hosts);
     if (isCatalogUrl(page.url)) {
-      catalog = parseEpisodes(page.text, page.url);
+      const initialPage = page;
+      catalog = await listEpisodes(page.url, hosts, (url, allowedHosts) => url === initialPage.url ? Promise.resolve(initialPage) : read(url, allowedHosts));
       if (/^\/GV\d+\/?$/.test(new URL(page.url).pathname)) {
         page = await read(catalog.episodes[0].url, hosts);
       }
@@ -37,7 +38,8 @@ export async function resolveMedia(input, hosts, read = fetchText) {
   allowedUrl(url, hosts);
   if (!/\.(m3u8|mp4)(?:\?|$)/i.test(url)) throw new Error('解析结果不是支持的 HLS / MP4 视频');
   return { kind: /\.m3u8(?:\?|$)/i.test(url) ? 'hls' : 'mp4', url, source, title,
-    ...(catalog ? { episodes: catalog.episodes, episodeIndex: catalog.episodeIndex, seriesTitle: catalog.title, cover: catalog.cover } : {}) };
+    ...(catalog ? { episodes: catalog.episodes, episodeIndex: catalog.episodeIndex, seriesTitle: catalog.title, cover: catalog.cover,
+      episodeTitle: catalog.episodes[catalog.episodeIndex]?.title || '', group: catalog.episodes[catalog.episodeIndex]?.group || '', episodeNumber: catalog.episodes[catalog.episodeIndex]?.episodeNumber } : {}) };
 }
 
 export function parsePlaylist(text, base, hosts) {

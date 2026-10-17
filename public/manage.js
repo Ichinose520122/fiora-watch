@@ -2,7 +2,10 @@ const $ = id => document.getElementById(id);
 const room = /^\/room\/([a-f0-9]+)\/manage$/.exec(location.pathname)?.[1];
 let state; let activeTab = 'online'; let busy = false; let noticeTimer; let catalog; let selectedIndex = 0;
 let catalogLoading = false; let searchLoading = false; let searchPage = 0; let searchQuery = ''; let downloading = false;
-const bytes = value => `${(value / 1024 ** 3).toFixed(2)} GB`;
+let selectedDownloads = new Set(); let currentGroup = '';
+const bytes = value => { const number = Math.max(0, Number(value) || 0); const unit = number >= 1024 ** 3 ? 'GB' : number >= 1024 ** 2 ? 'MB' : number >= 1024 ? 'KB' : 'B'; return `${(number / ({ GB: 1024 ** 3, MB: 1024 ** 2, KB: 1024, B: 1 })[unit]).toFixed(unit === 'B' ? 0 : 1)} ${unit}`; };
+const episodeGroup = episode => String(episode.groupId ?? episode.group ?? 'default');
+const catalogDownloadable = () => !!catalog?.episodes?.length && !catalog.episodes.some(episode => { try { return /(^|\.)bilibili\.com$|^b23\.tv$/.test(new URL(episode.url).hostname); } catch { return true; } });
 function notice(text, error = false) { clearTimeout(noticeTimer); $('notice').textContent = text; $('notice').hidden = !text; $('notice').classList.toggle('error', error); if (!error && text) noticeTimer = setTimeout(() => { $('notice').hidden = true; }, 3500); }
 async function api(url, body, signal) {
   const response = await fetch(url, { method: body === undefined ? 'GET' : 'POST', signal: signal || AbortSignal.timeout(45000), headers: { 'Content-Type': 'application/json', 'X-Watch-Request': '1', 'X-Watch-Room': room || '' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
@@ -14,8 +17,13 @@ function refreshControls() {
   $('clear').disabled = busy || !state?.canControl || !state?.media;
   $('inspect').disabled = catalogLoading;
   $('play-episode').disabled = busy || catalogLoading || !state?.canControl || !catalog?.episodes?.[selectedIndex];
-  $('download-episode').hidden = !state?.user.admin;
+  $('download-episode').hidden = $('download-batch').hidden = $('batch-controls').hidden = !state?.user.admin || !catalogDownloadable();
   $('download-episode').disabled = downloading || catalogLoading || !catalog?.episodes?.[selectedIndex];
+  $('download-batch').disabled = downloading || catalogLoading || !selectedDownloads.size || selectedDownloads.size > 100;
+  $('download-batch').textContent = downloading ? '加入队列中…' : `批量下载勾选剧集${selectedDownloads.size ? `（${selectedDownloads.size}）` : ''}`;
+  $('select-all-episodes').disabled = $('clear-episodes').disabled = downloading || catalogLoading;
+  $('add-download').disabled = downloading || catalogLoading;
+  $('batch-count').textContent = `已选 ${selectedDownloads.size} 集 · 每批最多 100 集`;
   document.querySelectorAll('[data-library-play]').forEach(button => { button.disabled = busy || !state?.canControl; });
 }
 async function refreshState() { state = await api('/api/state'); $('identity').textContent = state.user.name; $('download-tab').hidden = $('bilibili-tab').hidden = !state.user.admin; $('current-title').textContent = state.media?.title || '未选择'; refreshControls(); }
@@ -32,7 +40,7 @@ $('source-form').onsubmit = event => {
     try {
       await select({ mode: 'online', url: $('source').value.trim() });
       sessionStorage.removeItem(`watch-source:${room}`);
-      if (state?.media?.episodes?.length) { catalog = { title: state.media.title, episodes: state.media.episodes }; selectedIndex = state.media.episodeIndex || 0; renderCatalog(); }
+      if (state?.media?.episodes?.length) { selectedDownloads.clear(); currentGroup = ''; catalog = { title: state.media.seriesTitle || state.media.title, episodes: state.media.episodes }; selectedIndex = state.media.episodeIndex || 0; renderCatalog(); }
     } finally { $('load').textContent = '播放此地址'; }
   });
 };
@@ -41,23 +49,36 @@ function renderCatalog() {
   const episodes = catalog?.episodes || [];
   $('catalog-detail').hidden = !catalog;
   $('catalog-title').textContent = catalog?.title || '分集';
-  const groups = new Set(episodes.map(episode => episode.group || '')).size;
-  const count = episodes.filter(episode => episode.group === episodes[selectedIndex]?.group).length;
-  $('catalog-count').textContent = groups > 1 ? `${count} 集 · ${groups} 条线路` : `${episodes.length} 集`;
+  $('catalog-description').textContent = catalog?.description || '';
+  const groups = [...new Map(episodes.map(episode => [episodeGroup(episode), episode.group || '默认线路'])).entries()];
+  if (!groups.some(([id]) => id === currentGroup)) currentGroup = episodeGroup(episodes[selectedIndex] || {});
+  const count = episodes.filter(episode => episodeGroup(episode) === currentGroup).length;
+  $('catalog-count').textContent = `${count} 集 · ${groups.length} 条线路`;
+  $('catalog-group').replaceChildren(...groups.map(([id, name]) => { const option = document.createElement('option'); option.value = id; option.textContent = `${name}（${episodes.filter(episode => episodeGroup(episode) === id).length} 集）`; option.selected = id === currentGroup; return option; }));
   $('catalog-episodes').replaceChildren();
   let previousGroup;
   episodes.forEach((episode, index) => {
+    if (episodeGroup(episode) !== currentGroup) return;
     if (episode.group && episode.group !== previousGroup) { const heading = document.createElement('div'); heading.className = 'episode-group'; heading.textContent = episode.group; $('catalog-episodes').append(heading); previousGroup = episode.group; }
     const node = document.createElement('button'); node.className = index === selectedIndex ? 'episode active' : 'episode';
     node.textContent = episode.title || `第 ${index + 1} 集`; node.title = episode.group ? `${episode.group} · ${node.textContent}` : node.textContent;
     node.setAttribute('aria-pressed', String(index === selectedIndex)); node.onclick = () => { selectedIndex = index; renderCatalog(); };
-    $('catalog-episodes').append(node);
+    if (state?.user.admin && catalogDownloadable()) {
+      const wrapper = document.createElement('div'); wrapper.className = 'episode-choice';
+      const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = selectedDownloads.has(index); checkbox.disabled = downloading;
+      checkbox.setAttribute('aria-label', `下载 ${episode.group || ''} ${episode.title || `第 ${index + 1} 集`}`);
+      checkbox.onchange = () => { if (checkbox.checked) selectedDownloads.add(index); else selectedDownloads.delete(index); refreshControls(); };
+      wrapper.append(checkbox, node); $('catalog-episodes').append(wrapper);
+    } else $('catalog-episodes').append(node);
   });
-  $('selected-episode').textContent = episodes[selectedIndex]?.title || '暂无可用分集'; refreshControls();
+  $('selected-episode').textContent = episodes[selectedIndex] ? `当前：${episodes[selectedIndex].group || ''} · ${episodes[selectedIndex].title}` : '暂无可用分集'; refreshControls();
 }
+$('catalog-group').onchange = () => { currentGroup = $('catalog-group').value; selectedDownloads.clear(); selectedIndex = catalog.episodes.findIndex(episode => episodeGroup(episode) === currentGroup); renderCatalog(); };
+$('select-all-episodes').onclick = () => { selectedDownloads = new Set(catalog.episodes.flatMap((episode, index) => episodeGroup(episode) === currentGroup ? [index] : [])); renderCatalog(); if (selectedDownloads.size > 100) notice('此线路超过 100 集，请取消部分勾选后分批下载。', true); };
+$('clear-episodes').onclick = () => { selectedDownloads.clear(); renderCatalog(); };
 async function inspect(url) {
   if (catalogLoading) return;
-  catalogLoading = true; catalog = null; renderCatalog(); $('inspect').textContent = '读取中…';
+  catalogLoading = true; catalog = null; selectedDownloads.clear(); currentGroup = ''; renderCatalog(); $('inspect').textContent = '读取中…';
   try {
     const result = await api(`/api/catalog/episodes?url=${encodeURIComponent(url)}`);
     catalog = result; selectedIndex = result.episodeIndex || 0; $('source').value = url; renderCatalog();
@@ -73,6 +94,15 @@ async function download(url) {
   finally { downloading = false; refreshControls(); }
 }
 $('download-episode').onclick = () => attempt(() => download(catalog.episodes[selectedIndex].url));
+$('download-batch').onclick = () => attempt(async () => {
+  if (downloading || !state?.user.admin || !selectedDownloads.size || selectedDownloads.size > 100) return;
+  const urls = [...selectedDownloads].sort((a, b) => a - b).map(index => catalog.episodes[index].url);
+  downloading = true; refreshControls();
+  try {
+    const result = await api('/api/downloads/batch', { urls }); selectedDownloads.clear(); renderCatalog();
+    notice(`已添加 ${result.added} 集${result.skipped ? `，${result.skipped} 集已在队列或已完成` : ''}`);
+  } finally { downloading = false; refreshControls(); }
+});
 function appendSearch(items) {
   for (const entry of items) {
     const card = document.createElement('button'); card.className = 'catalog-card'; card.type = 'button';
@@ -81,7 +111,7 @@ function appendSearch(items) {
     } else card.classList.add('no-cover');
     const info = document.createElement('div'); info.className = 'catalog-info';
     const title = document.createElement('strong'); title.textContent = entry.title;
-    const description = document.createElement('small'); description.textContent = entry.description || '查看剧集'; info.append(title, description); card.append(info);
+    const description = document.createElement('small'); description.textContent = `${entry.description || '查看完整剧集'}${state?.user.admin ? ' · 可批量下载' : ''}`; info.append(title, description); card.append(info);
     card.onclick = () => attempt(() => inspect(entry.url)); $('search-results').append(card);
   }
 }
@@ -109,13 +139,43 @@ let loadingJobs = false;
 async function downloads() {
   if (loadingJobs) return; loadingJobs = true;
   try {
+    const expanded = new Set([...$('jobs').querySelectorAll('details[open]')].map(node => node.dataset.job));
     const result = await api('/api/downloads'); $('jobs').replaceChildren(); $('storage').textContent = `缓存 ${bytes(result.usedBytes)} / ${bytes(result.quota)}`;
     const labels = { queued: '排队中', running: '下载中', done: '已完成', failed: '失败', cancelled: '已取消' };
-    for (const job of result.jobs.slice().reverse()) button(item($('jobs'), job.title, `${labels[job.status]} · ${job.completed}/${job.total || '?'} · ${bytes(job.bytes)}${job.error ? ' · ' + job.error : ''}`), ['running', 'queued'].includes(job.status) ? '取消' : '删除', async () => { if (job.status === 'done' && !confirm('删除这个已下载的视频？')) return; await api(`/api/downloads/${job.id}/remove`, {}); await downloads(); });
+    const stages = { queued: '等待开始', resolving: '解析视频地址', playlist: '读取 HLS 清单', downloading: '传输视频', cancelling: '正在取消', finalizing: '整理到媒体库', done: '可在媒体库播放', failed: '下载失败', cancelled: '任务已取消' };
+    const counts = Object.fromEntries(Object.keys(labels).map(status => [status, result.jobs.filter(job => job.status === status).length]));
+    $('queue-summary').textContent = `排队 ${counts.queued} · 进行中 ${counts.running} · 已完成 ${counts.done} · 失败 ${counts.failed} · 已取消 ${counts.cancelled}`;
+    if (!result.jobs.length) $('jobs').textContent = '还没有下载任务，搜索番剧后可勾选整季下载。';
+    const queue = result.jobs.filter(job => job.status === 'queued');
+    for (const job of result.jobs.slice().reverse()) {
+      const active = ['running', 'queued'].includes(job.status);
+      const ratio = job.status === 'done' ? 1 : job.kind === 'hls' && job.total ? job.completed / job.total : job.expectedBytes ? job.bytes / job.expectedBytes : null;
+      const percent = ratio === null ? '大小待来源提供' : `${Math.min(job.status === 'done' ? 100 : 99.9, Math.max(0, ratio * 100)).toFixed(1)}%`;
+      const detail = `${labels[job.status] || job.status} · ${stages[job.status === 'running' ? job.stage : job.status] || '处理中'}${job.status === 'queued' ? ` · 第 ${queue.indexOf(job) + 1} 位` : ''} · ${percent}`;
+      const row = item($('jobs'), job.title || job.source, detail); row.classList.add('download-job');
+      const transfer = document.createElement('small');
+      transfer.textContent = `${job.group ? job.group + ' · ' : ''}${job.episodeTitle || (job.episodeNumber ? `第 ${job.episodeNumber} 集` : '')}${job.kind === 'hls' ? ` · 分段 ${job.completed}/${job.total || '?'}${job.currentSegment && job.status === 'running' ? `，正在传输第 ${job.currentSegment} 段` : ''}` : ''} · ${bytes(job.bytes)} / ${job.expectedBytes ? bytes(job.expectedBytes) : '总大小未知'}${job.status === 'running' && job.stage === 'downloading' ? ` · ${bytes(job.speedBytesPerSecond)}/s` : ''}`;
+      row.append(transfer);
+      if (ratio !== null || job.status === 'running') { const progress = document.createElement('progress'); progress.max = 1; if (ratio !== null) progress.value = Math.max(0, Math.min(1, ratio)); progress.setAttribute('aria-label', `${job.title} 下载进度`); row.append(progress); }
+      if (job.error) { const error = document.createElement('p'); error.className = 'download-error'; error.textContent = job.error; row.append(error); }
+      const metadata = document.createElement('details'); metadata.dataset.job = job.id; metadata.open = expanded.has(job.id);
+      const summary = document.createElement('summary'); summary.textContent = '任务详情'; metadata.append(summary);
+      const info = document.createElement('p'); info.textContent = `任务 ${job.id} · ${job.kind === 'hls' ? 'HLS' : job.kind === 'mp4' ? 'MP4' : '待解析'}${job.seriesTitle ? ` · ${job.seriesTitle}` : ''}`; metadata.append(info);
+      const dates = document.createElement('p'); dates.textContent = [['添加', job.createdAt], ['开始', job.startedAt], ['结束', job.finishedAt]].filter(([, value]) => value).map(([label, value]) => `${label} ${new Date(value).toLocaleString('zh-CN')}`).join(' · '); metadata.append(dates);
+      try { const source = new URL(job.source); if (['http:', 'https:'].includes(source.protocol)) { const link = document.createElement('a'); link.href = source.href; link.textContent = '查看原始片源'; link.target = '_blank'; link.rel = 'noreferrer noopener'; metadata.append(link); } } catch { /* Old records can lack a source. */ }
+      row.append(metadata);
+      button(row, active ? '取消下载' : '删除记录与文件', async () => { if (job.status === 'done' && !confirm('删除这个已下载的视频及任务记录？')) return; await api(`/api/downloads/${job.id}/remove`, {}); await downloads(); });
+      if (['failed', 'cancelled'].includes(job.status)) button(row, '重新排队', () => download(job.source));
+    }
   } finally { loadingJobs = false; }
 }
 $('refresh-library').onclick = () => attempt(library);
-$('download-form').onsubmit = event => { event.preventDefault(); attempt(() => download($('download-source').value.trim())); };
+$('download-form').onsubmit = event => { event.preventDefault(); attempt(async () => {
+  const source = $('download-source').value.trim(); const url = new URL(source);
+  if (url.origin === 'https://ani.girigirilove.com' && /^\/(?:GV\d+|playGV\d+-\d+-\d+)\/?$/.test(url.pathname)) {
+    document.querySelector('[data-tab="online"]').click(); await inspect(source); notice('已读取完整剧集，请选择线路并勾选要下载的集数。');
+  } else await download(source);
+}); };
 let bilibiliAccount; let accountTask = ''; let accountVersion = 0;
 let qrSession; let qrTimer; let qrController; let qrPolling = false; let qrGeneration = 0; let pageLeaving = false;
 function accountTime(value) {
@@ -223,6 +283,19 @@ async function logoutAccount() {
 $('bilibili-refresh').onclick = () => attempt(() => loadAccount(true));
 $('bilibili-login').onclick = $('bilibili-retry').onclick = () => attempt(loginAccount);
 $('bilibili-logout').onclick = () => attempt(logoutAccount);
+let settingsBusy = false;
+async function playbackSettings(save = false) {
+  if (settingsBusy || !state?.user.admin) return; settingsBusy = true;
+  $('save-playback-settings').disabled = $('bilibili-delivery').disabled = true;
+  $('playback-settings-status').textContent = save ? '保存中…' : '读取中…';
+  try {
+    const result = await api('/api/settings/playback', save ? { bilibiliDelivery: $('bilibili-delivery').value } : undefined);
+    $('bilibili-delivery').value = result.bilibiliDelivery === 'direct' ? 'direct' : 'proxy';
+    $('playback-settings-status').textContent = save ? '已保存，下次选片生效。' : '';
+  } catch (error) { $('playback-settings-status').textContent = error.message || '设置暂不可用'; throw error; }
+  finally { settingsBusy = false; $('save-playback-settings').disabled = $('bilibili-delivery').disabled = false; }
+}
+$('playback-settings-form').onsubmit = event => { event.preventDefault(); attempt(() => playbackSettings(true)); };
 document.addEventListener('visibilitychange', () => { if (document.hidden) stopQrPolling(); else queueQrPoll(); });
 window.addEventListener('pagehide', () => { pageLeaving = true; stopQrPolling(); });
 window.addEventListener('pageshow', () => { pageLeaving = false; queueQrPoll(); });
@@ -233,12 +306,12 @@ document.querySelectorAll('[data-tab]').forEach(tab => { tab.onclick = () => {
   for (const name of ['online', 'local', 'download', 'bilibili']) $(`${name}-panel`).hidden = name !== activeTab;
   if (activeTab === 'local') attempt(library);
   if (activeTab === 'download') attempt(downloads);
-  if (activeTab === 'bilibili') { attempt(() => loadAccount()); queueQrPoll(); }
+  if (activeTab === 'bilibili') { attempt(() => loadAccount()); attempt(() => playbackSettings()); queueQrPoll(); }
 }; });
-setInterval(() => { if (state?.user.admin && activeTab === 'download') attempt(downloads); }, 4000);
+setInterval(() => { if (!document.hidden && state?.user.admin && activeTab === 'download') attempt(downloads); }, 2000);
 attempt(async () => {
   if (!room) return; $('home').href = $('back').href = `/room/${room}`;
   const seed = new URLSearchParams(location.hash.slice(1)).get('source'); history.replaceState(null, '', location.pathname); if (seed) sessionStorage.setItem(`watch-source:${room}`, seed);
   $('source').value = sessionStorage.getItem(`watch-source:${room}`) || ''; await refreshState();
-  if (state.media?.episodes?.length) { catalog = { title: state.media.title, episodes: state.media.episodes }; selectedIndex = state.media.episodeIndex || 0; renderCatalog(); }
+  if (state.media?.episodes?.length) { selectedDownloads.clear(); currentGroup = ''; catalog = { title: state.media.seriesTitle || state.media.title, episodes: state.media.episodes }; selectedIndex = state.media.episodeIndex || 0; renderCatalog(); }
 });

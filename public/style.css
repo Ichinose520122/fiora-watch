@@ -95,3 +95,56 @@ video{cursor:pointer}
 .qr-inactive .qr-image-frame:before{content:'◐';font-size:45px;color:#8f819f}
 .tabs{flex-wrap:wrap}
 @media(max-width:760px){.account-card{padding:17px 14px;gap:12px;flex-wrap:wrap}.account-mark{width:43px;height:43px;border-radius:12px;font-size:23px}.account-name-row h3{font-size:14px}.account-card>.quiet{padding:5px 0;font-size:11px;margin-left:55px}.account-checked{margin-left:0;flex-basis:100%;padding-top:4px}.account-qr{padding:22px 15px;gap:18px;flex-direction:column;text-align:center}.qr-info h3{margin-top:6px}.qr-info .quiet{padding:7px 12px}.account-actions{margin-top:17px}.tabs{gap:2px}.tabs button{padding:9px 12px}}
+
+/* The fullscreen target includes the video, menus, and room controls. */
+.player-shell{position:relative;min-width:0;background:#05080f;border-radius:14px;isolation:isolate}
+.player-shell .screen{box-shadow:none}
+.player-shell video{display:block;width:100%;height:100%;min-height:0;object-fit:contain!important;background:#05080f}
+.player-shell .player-controls{position:relative;z-index:5}
+.player-shell .transport{gap:10px}
+.player-setting{position:relative;flex-shrink:0}
+.setting-button{font-size:11px;line-height:1.5;border:0;background:transparent;border-radius:6px;padding:7px 9px;white-space:nowrap;color:#d9d5e8;min-height:32px}
+.setting-button:hover,.setting-button[aria-expanded=true]{background:#b8a1ff19;color:#e5d8ff}
+.setting-button.selected{color:var(--accent)}
+.player-menu{position:absolute;bottom:calc(100% + 16px);right:0;min-width:205px;max-width:min(280px,80vw);max-height:min(350px,55vh);overflow:auto;background:#131927f5;backdrop-filter:blur(18px);border:1px solid #c2b0e333;border-radius:10px;box-shadow:0 12px 35px #0009;padding:9px;scrollbar-width:thin}
+.player-menu-heading{padding:4px 9px 7px;margin:0;color:#aba4bd;font-size:10px;letter-spacing:1px}
+.player-menu button{display:block;width:100%;padding:9px 28px 9px 10px;border:0;border-radius:6px;background:transparent;text-align:left;font-size:12px;position:relative;white-space:normal;overflow-wrap:anywhere;line-height:1.6}
+.player-menu button:hover{background:#b8a1ff17}
+.player-menu button[aria-checked=true]{color:#d5bbff;background:#b8a1ff10}
+.player-menu button[aria-checked=true]:after{content:'✓';position:absolute;right:9px;top:9px}
+.player-menu-message{font-size:10px;line-height:1.7;margin:7px 8px 4px;color:#9697b0}
+.player-loading{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:13px;font-size:12px;color:#e4ddf2;background:#05080f55;pointer-events:none;z-index:1;text-shadow:0 2px 5px #000}
+.loading-spinner{width:33px;height:33px;border:2px solid #ddd2ff25;border-top-color:#c4acf7;border-radius:50%;animation:player-spin .9s linear infinite}
+@keyframes player-spin{to{transform:rotate(360deg)}}
+.player-error{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:25px;background:#080c17e6;text-align:center;font-size:12px;z-index:3}
+.player-error button{font-size:12px;padding:8px 17px}
+.player-shell .join-overlay{z-index:2}
+.player-shell video::cue{background:#0009;color:#fff;font-family:system-ui,sans-serif;font-size:clamp(14px,2vw,27px);line-height:1.5}
+.player-shell:fullscreen,.player-shell:-webkit-full-screen,.player-shell.web-fullscreen{width:100%;height:100%;max-width:none;border:0;border-radius:0;background:#000;display:flex;flex-direction:column;justify-content:center}
+.player-shell.web-fullscreen{position:fixed;inset:0;z-index:10000;height:100dvh;width:100vw}
+body.player-fullscreen{overflow:hidden}
+.player-shell:fullscreen .screen,.player-shell:-webkit-full-screen .screen,.player-shell.web-fullscreen .screen{width:100%;height:100%;aspect-ratio:auto;border:0;border-radius:0;min-height:0;background:#000}
+.player-shell:fullscreen .player-controls,.player-shell:-webkit-full-screen .player-controls,.player-shell.web-fullscreen .player-controls{position:absolute;left:0;right:0;bottom:0;padding:18px max(20px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(20px,env(safe-area-inset-left));background:linear-gradient(transparent,#080b15e6 45%);border:0;border-radius:0;transition:opacity .2s}
+.player-shell:fullscreen.controls-idle:not(:focus-within) .player-controls,.player-shell:-webkit-full-screen.controls-idle:not(:focus-within) .player-controls,.player-shell.web-fullscreen.controls-idle:not(:focus-within) .player-controls{opacity:0;pointer-events:none}
+.player-shell:fullscreen.controls-idle,.player-shell.web-fullscreen.controls-idle{cursor:none}
+.player-shell:fullscreen .player-menu,.player-shell.web-fullscreen .player-menu{bottom:calc(100% + 20px)}
+@media(max-width:760px){.player-shell .player-controls{padding:0 9px 5px}.player-shell .transport{gap:4px}.player-shell #time{font-size:9px;white-space:nowrap}.player-shell .volume{gap:5px}.player-shell .volume input{width:42px}.setting-button{font-size:10px;padding:7px 6px}.player-shell .icon-button{padding:7px}.player-menu{min-width:180px}.player-loading{font-size:11px;gap:9px}.loading-spinner{width:26px;height:26px}.player-shell:fullscreen .transport,.player-shell.web-fullscreen .transport{min-height:46px}}
+@media(max-width:400px){.player-shell .volume input{width:30px}.player-shell .volume>span{display:none}.setting-button{max-width:85px;text-overflow:ellipsis;overflow:hidden}.player-shell #time{font-size:8px}.player-shell .transport{gap:2px}}
+@media(prefers-reduced-motion:reduce){.loading-spinner{animation:none;border-color:#c4acf7}.player-shell .player-controls{transition:none}}
+
+.episode-choice{display:flex;align-items:center;gap:8px;min-width:0;padding:4px 6px;border:1px solid #aeb6d31a;border-radius:9px;background:#111b2c}
+.episode-choice>input[type=checkbox]{width:15px;height:15px;flex-shrink:0;accent-color:var(--accent);cursor:pointer}
+.episode-choice>.episode{flex:1;border:0;min-width:0;text-align:left;background:transparent;padding:8px 3px}
+.episode-choice:has(input:checked){background:#302b45;border-color:#bba6ea69}
+.download-job progress{display:block;width:100%;height:7px;margin:15px 0 8px;accent-color:var(--accent);border-radius:10px;overflow:hidden}
+.download-job progress::-webkit-progress-bar{background:#0e1526;border-radius:10px}
+.download-job progress::-webkit-progress-value{background:#b3a0d8;border-radius:10px}
+.download-job details{margin-top:12px;border-top:1px solid var(--line);padding-top:9px;color:var(--muted);font-size:11px}
+.download-job summary{cursor:pointer;color:#bfb3d2;overflow-wrap:anywhere}
+.download-job pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto;background:#0c1422;padding:10px;border-radius:7px;font-size:10px;line-height:1.7}
+.download-error{color:#efb2b8;font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;margin:10px 0}
+#playback-settings h3{font-size:14px;font-weight:500;margin:0 0 8px}
+#playback-settings p{font-size:11px;color:var(--muted);line-height:1.8}
+#playback-settings select{flex:1;min-width:0;max-width:100%;border:1px solid #a9b8e126;border-radius:9px;background:#0f1728;color:var(--ink);padding:12px 14px;font:inherit;color-scheme:dark}
+#playback-settings option{background:#151d2e}
+@media(max-width:760px){.episode-choice{gap:5px;padding:3px 5px}.episode-choice>.episode{font-size:10px}.download-job pre{max-height:150px}#playback-settings select{width:100%}}

@@ -43,24 +43,43 @@ export function parseEpisodes(html, pageUrl) {
     try { url = new URL($(element).attr('href'), current); } catch { return; }
     const match = /^\/playGV(\d+)-(\d+)-(\d+)\/?$/.exec(url.pathname);
     if (url.origin !== origin || !match || match[1] !== showId || seen.has(url.pathname) || episodes.length >= 2000) return;
+    url.search = ''; url.hash = ''; url.pathname = `/playGV${showId}-${Number(match[2])}-${Number(match[3])}/`;
+    if (seen.has(url.pathname)) return;
     seen.add(url.pathname);
     episodes.push({ title: clean($(element).find('span').first().text() || $(element).text()) || `第 ${match[3]} 集`, url: url.href,
-      group: groups[Number(match[2]) - 1] || `线路 ${match[2]}` });
+      group: groups[Number(match[2]) - 1] || `线路 ${match[2]}`, groupId: Number(match[2]), episodeNumber: Number(match[3]) });
   });
   if (!episodes.length) throw new Error('此番暂无可用分集，或来源页面暂不可用');
-  const title = clean($('.player-title-link').first().text() || $('.detail-pic img').attr('alt') || $('h1').first().text() || $('title').text().split(' - ')[0]);
+  episodes.sort((a, b) => a.groupId - b.groupId || a.episodeNumber - b.episodeNumber);
+  const title = clean($('.player-title-link').first().text() || $('.detail-pic img').attr('alt') || $('.slide-info-title').first().text() || $('h1').first().text() || $('title').text().split(' - ')[0]);
   let cover = '';
   const poster = $(`a[href="/GV${showId}/"] img`).first();
   const picture = poster.attr('data-src') || poster.attr('src') || $('meta[property="og:image"]').attr('content') || $('.detail-pic img').attr('data-src');
   try { const image = new URL(picture, origin); if (image.origin === origin && image.pathname.startsWith('/upload/')) cover = image.href; } catch { /* Optional cover. */ }
-  return { title, cover, source: `${origin}/GV${showId}/`, episodes,
+  return { title, cover, description: clean($('#height_limit').first().text() || $('meta[name="description"]').attr('content')), source: `${origin}/GV${showId}/`, episodes,
     episodeIndex: Math.max(0, episodes.findIndex(item => new URL(item.url).pathname === current.pathname)) };
 }
 
 export async function listEpisodes(input, hosts, read = fetchText) {
   if (typeof input !== 'string' || input.length > 4096 || !isCatalogUrl(input)) throw new Error('请使用 Girigirilove 番剧或播放页地址');
-  const result = await read(allowedUrl(input, hosts).href, hosts);
-  return parseEpisodes(result.text, result.url);
+  const source = allowedUrl(input, hosts);
+  const showId = /(?:play)?GV(\d+)/.exec(source.pathname)[1];
+  const detailUrl = `${origin}/GV${showId}/`;
+  // The detail page is authoritative for the whole season, including hidden lines.
+  // A playable episode page remains a useful fallback if the detail endpoint fails.
+  let detail;
+  try {
+    const result = await read(allowedUrl(detailUrl, hosts).href, hosts);
+    detail = parseEpisodes(result.text, result.url);
+    if (detail.source !== detailUrl) throw new Error('来源跳转到了其他番剧，请重试');
+  } catch (error) { detail = undefined; if (!source.pathname.startsWith('/playGV')) throw error; }
+  if (!detail) {
+    const result = await read(source.href, hosts);
+    detail = parseEpisodes(result.text, result.url);
+    if (detail.source !== detailUrl) throw new Error('来源跳转到了其他番剧，请重试');
+  }
+  const selected = detail.episodes.findIndex(episode => new URL(episode.url).pathname.replace(/\/$/, '') === source.pathname.replace(/\/$/, ''));
+  return { ...detail, episodeIndex: Math.max(0, selected) };
 }
 
 // Cache public metadata briefly; playback URLs are always resolved when selecting an episode.

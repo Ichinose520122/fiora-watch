@@ -1,9 +1,16 @@
 /* global Hls, dashjs */
+import { createPlayer } from './player.js';
 const $ = id => document.getElementById(id);
 const video = $('video');
 let room = /^\/room\/([a-f0-9]+)$/.exec(location.pathname)?.[1];
 let state; let receivedAt = 0; let currentMedia = ''; let mediaVersion = -1; let hls; let dash; let enabled = false; let events; let applying = false; let controlBusy = false; let episodeBusy = false; let episodeSignature = '';
 let chatBusy = false; let sending = false; let lastMessages = ''; let pendingSend; let scrollAfterSend = false; let noticeTimer;
+let sourceGeneration = 0; let fallbackUsed = false; let activeSource = ''; let playAttempt = 0; let locallySeeking = false;
+const player = createPlayer({ video, notify: text => notice(text, true), subtitles: async (version, signal) => {
+  const response = await fetch(`/api/bilibili/subtitles?room=${encodeURIComponent(room)}&version=${encodeURIComponent(version)}`, { signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]), headers: { 'X-Watch-Request': '1', 'X-Watch-Room': room || '' } });
+  if (!response.ok) throw new Error('字幕暂时不可用');
+  return response.json();
+} });
 function notice(text, error = false) { clearTimeout(noticeTimer); $('notice').textContent = text; $('notice').hidden = !text; $('notice').classList.toggle('error', error); if (text && !error) noticeTimer = setTimeout(() => { $('notice').hidden = true; }, 3500); }
 const time = value => { const seconds = Math.max(0, Math.floor(value || 0)); return `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`; };
 async function api(url, body) {
@@ -18,14 +25,42 @@ async function api(url, body) {
 function attempt(task) { return Promise.resolve().then(task).catch(error => notice(error.message, true)); }
 function target() { return state ? state.position + (state.paused ? 0 : Math.max(0, (state.serverTime - state.updatedAt) / 1000 + (performance.now() - receivedAt) / 1000)) : 0; }
 function synchronize() {
-  if (!state?.media || video.readyState < 1 || !enabled || applying) return;
+  if (!state?.media || video.readyState < 1 || !enabled || applying || locallySeeking) return;
   const goal = Math.min(target(), Number.isFinite(video.duration) ? video.duration : Infinity);
   if (Math.abs(video.currentTime - goal) > 1.2) video.currentTime = goal;
   if (state.paused) { video.pause(); return; }
   if (video.paused && !video.ended) {
-    applying = true;
-    video.play().catch(() => { enabled = false; $('join').hidden = false; }).finally(() => { applying = false; });
+    applying = true; const attempt = ++playAttempt; const generation = sourceGeneration;
+    video.play().catch(error => { if (generation === sourceGeneration && attempt === playAttempt && error.name !== 'AbortError') { enabled = false; $('join').hidden = false; } }).finally(() => { if (attempt === playAttempt) applying = false; });
   }
+}
+function loadMedia(source, { preserve = false } = {}) {
+  const generation = ++sourceGeneration; activeSource = source; playAttempt += 1; applying = false;
+  video.onerror = null; $('seek').value = String(Math.max(0, target()));
+  hls?.destroy(); hls = null; dash?.reset(); dash = null; video.pause(); video.removeAttribute('src');
+  player.begin(state?.media, mediaVersion, { preserve }); video.load(); $('empty').hidden = !!source;
+  if (!source) return;
+  const failed = () => {
+    if (generation !== sourceGeneration || source !== activeSource) return;
+    const fallback = state?.media?.fallbackUrl;
+    if (!fallbackUsed && state?.media?.playbackMode === 'direct' && fallback && fallback !== source && new URL(fallback, location.origin).origin === location.origin) {
+      fallbackUsed = true; loadMedia(fallback, { preserve: true }); notice('直连受来源限制，已改用服务器加载'); return;
+    }
+    player.fail('影片暂时无法加载，请重试或更换片源。'); notice('影片暂时无法加载，请重试或更换片源。', true);
+  };
+  if (state.media.kind === 'dash') {
+    if (typeof dashjs === 'undefined') { player.fail('播放器未就绪，请刷新后重试。'); return; }
+    const instance = dashjs.MediaPlayer().create(); dash = instance;
+    instance.updateSettings({ streaming: { buffer: { bufferTimeDefault: 30 } } });
+    player.attachDash(instance, dashjs.MediaPlayer.events);
+    instance.on(dashjs.MediaPlayer.events.ERROR, event => { if (event.error) failed(); });
+    instance.initialize(video, source, false);
+  } else if (state.media.kind === 'hls' && typeof Hls !== 'undefined' && Hls.isSupported()) {
+    const instance = new Hls({ maxBufferLength: 30, maxMaxBufferLength: 60 }); hls = instance;
+    player.attachHls(instance, Hls.Events); instance.loadSource(source); instance.attachMedia(video);
+    instance.on(Hls.Events.ERROR, (_event, data) => { if (data.fatal) failed(); });
+  } else video.src = source;
+  video.onerror = () => { if (video.error) failed(); };
 }
 function receive(next) {
   if (state && next.revision < state.revision) return;
@@ -41,23 +76,8 @@ function receive(next) {
   renderEpisodes();
   const source = next.media?.url || '';
   if (source !== currentMedia || (next.mediaVersion || 0) !== mediaVersion) {
-    currentMedia = source; mediaVersion = next.mediaVersion || 0; notice(''); video.poster = next.media?.cover || '';
-    hls?.destroy(); hls = null; dash?.reset(); dash = null; video.pause(); video.removeAttribute('src'); video.load();
-    $('empty').hidden = !!source;
-    if (source) {
-      if (next.media.kind === 'dash') {
-        if (typeof dashjs === 'undefined') { notice('播放器未就绪，请刷新后重试。', true); return; }
-        dash = dashjs.MediaPlayer().create();
-        dash.updateSettings({ streaming: { buffer: { bufferTimeDefault: 30 } } });
-        dash.on(dashjs.MediaPlayer.events.ERROR, event => { if (event.error) notice('影片加载失败，请重试或更换片源。', true); });
-        dash.initialize(video, source, false);
-      } else if (next.media.kind === 'hls' && typeof Hls !== 'undefined' && Hls.isSupported()) {
-        hls = new Hls({ maxBufferLength: 30, maxMaxBufferLength: 60 }); hls.loadSource(source); hls.attachMedia(video);
-        hls.on(Hls.Events.ERROR, (_event, data) => {
-          if (data.fatal) { console.warn('HLS playback failed', data.details, data.response?.code || ''); notice('影片加载失败，请更换片源或使用本地媒体。', true); }
-        });
-      } else video.src = source;
-    }
+    currentMedia = source; mediaVersion = next.mediaVersion || 0; fallbackUsed = false; notice(''); video.poster = next.media?.cover || '';
+    locallySeeking = false; loadMedia(source);
   }
   synchronize();
 }
@@ -69,16 +89,15 @@ async function action(action, extra = {}) {
   finally { controlBusy = false; }
 }
 function unlock() {
-  enabled = true; $('join').hidden = true;
-  return video.play().then(synchronize).catch(() => { enabled = false; $('join').hidden = false; });
+  enabled = true; $('join').hidden = true; const generation = sourceGeneration;
+  return video.play().then(() => { if (generation === sourceGeneration) synchronize(); }).catch(error => { if (generation === sourceGeneration && error.name !== 'AbortError') { enabled = false; $('join').hidden = false; } });
 }
 function togglePlayback() {
   if (!state?.media || controlBusy || episodeBusy) return;
   if (!state.canControl) { if (!enabled) void unlock(); return; }
   const command = state.paused ? 'play' : 'pause';
   if (command === 'play' && !enabled) {
-    enabled = true; $('join').hidden = true;
-    video.play().catch(() => { enabled = false; $('join').hidden = false; });
+    void unlock();
   }
   attempt(() => action(command));
 }
@@ -122,11 +141,12 @@ async function selectEpisode(index) {
   catch (error) { receive(await api('/api/state')); throw error; }
   finally { episodeBusy = false; renderEpisodes(); }
 }
-$('seek').onchange = event => attempt(() => action('seek', { position: Number(event.target.value) }));
+$('seek').oninput = () => { locallySeeking = true; };
+$('seek').onchange = event => { const position = Number(event.target.value); attempt(async () => { try { await action('seek', { position }); } finally { locallySeeking = false; synchronize(); } }); };
+$('seek').onblur = () => { locallySeeking = false; synchronize(); };
 $('volume').oninput = event => { video.volume = Number(event.target.value); };
-$('fullscreen').onclick = () => attempt(() => video.requestFullscreen ? video.requestFullscreen() : video.webkitEnterFullscreen?.());
+$('retry-player').onclick = () => { if (state?.media) { notice(''); loadMedia(fallbackUsed ? state.media.fallbackUrl : currentMedia, { preserve: true }); } };
 video.addEventListener('loadedmetadata', synchronize); video.addEventListener('canplay', synchronize);
-video.addEventListener('error', () => { if (currentMedia) notice('影片无法播放，请检查片源。', true); });
 video.addEventListener('ended', () => { if (state?.canControl && !state.paused) attempt(() => action('pause')); });
 const decodeText = value => String(value || '').replace(/&(?:lt|gt|amp|quot|#39);/g, entity => ({ '&lt;': '<', '&gt;': '>', '&amp;': '&', '&quot;': '"', '&#39;': "'" })[entity]);
 function renderMessages(messages) {
