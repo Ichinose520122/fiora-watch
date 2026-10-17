@@ -17,6 +17,15 @@ const UNSUPPORTED = 'B站此视频需要登录、付费、地区授权或使用�
 const ACCESS_RESTRICTED = 'B站暂时限制了影院服务器的访问（HTTP 412），请稍后重试或使用官方播放器';
 const restricted = error => /HTTP\s*412\b/.test(String(error?.message || ''));
 
+// Only the official API and video page receive credentials, never short links or CDNs.
+export function authenticatedBilibiliReader(account, read = fetchText) {
+  return (value, hosts, signal, options = {}) => {
+    const url = new URL(value);
+    const cookie = url.protocol === 'https:' && ['api.bilibili.com', 'www.bilibili.com'].includes(url.hostname) && !url.port ? account.cookieHeader() : '';
+    return read(value, hosts, signal, { ...options, headers: { ...options.headers, ...(cookie ? { Cookie: cookie } : {}) } });
+  };
+}
+
 function inputUrl(input) {
   if (typeof input !== 'string' || input.length > 4096) throw new Error('B站视频地址格式错误');
   const value = input.trim();
@@ -184,16 +193,16 @@ function trackFrom(item, type, index) {
 
 export async function resolveBilibili(input, _hosts, read = fetchText) {
   const info = await metadata(input, read);
-  const data = await api('/x/player/playurl', { bvid: info.data.bvid, cid: info.selected.cid, fnval: 16, qn: 64, fourk: 0 }, read);
+  const data = await api('/x/player/playurl', { bvid: info.data.bvid, cid: info.selected.cid, fnval: 144, qn: 127, fourk: 1 }, read);
   if (data.is_preview || data.drm_tech_type || data.drm_type || data.need_login || data.need_vip) throw new Error(UNSUPPORTED);
   const common = { source: info.source, title: info.episodes.length > 1 ? `${info.title} · ${info.episodes[info.episodeIndex].title}` : info.title, seriesTitle: info.title, cover: info.cover, episodes: info.episodes, episodeIndex: info.episodeIndex };
   if (data.dash) {
     const duration = Number(data.dash.duration);
     if (!Number.isFinite(duration) || duration <= 0 || duration > 7 * 86400) throw new Error('B站视频时长无效');
-    // Prefer widely supported AVC / AAC; never request login-only qualities or DRM tracks.
+    // Prefer widely supported AVC / AAC among qualities authorized by the provider.
     const videos = (data.dash.video || []).filter(item => /^avc1\./.test(item.codecs || '')).slice(0, 8);
     const audio = (data.dash.audio || []).filter(item => /^mp4a\./.test(item.codecs || '')).sort((a, b) => b.bandwidth - a.bandwidth)[0];
-    if (!videos.length || !audio) throw new Error('B站没有可匿名播放的 H.264 / AAC 音视频轨道，请使用官方播放器');
+    if (!videos.length || !audio) throw new Error('B站没有可播放的 H.264 / AAC 音视频轨道，请使用官方播放器');
     const tracks = videos.map((item, index) => trackFrom(item, 'video', index));
     tracks.push(trackFrom(audio, 'audio', 0));
     return { ...common, kind: 'dash', bilibili: { duration, tracks } };

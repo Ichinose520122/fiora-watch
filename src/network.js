@@ -42,7 +42,12 @@ export async function requestPublic(value, hosts, signal, options = {}, redirect
   if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
     response.destroy();
     if (redirects >= 4 || !response.headers.location) throw new Error('来源跳转次数过多');
-    return requestPublic(new URL(response.headers.location, url).href, hosts, signal, options, redirects + 1);
+    const destination = new URL(response.headers.location, url);
+    if (destination.origin !== url.origin) {
+      const headers = Object.fromEntries(Object.entries(options.headers || {}).filter(([name]) => !['cookie', 'authorization', 'proxy-authorization'].includes(name.toLowerCase())));
+      options = { ...options, headers };
+    }
+    return requestPublic(destination.href, hosts, signal, options, redirects + 1);
   }
   if (!(options.acceptedStatus || [200]).includes(response.statusCode)) { response.destroy(); throw new Error(`来源返回 HTTP ${response.statusCode}`); }
   return { response, url: url.href };

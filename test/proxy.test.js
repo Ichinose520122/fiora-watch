@@ -7,6 +7,37 @@ import { Readable } from 'node:stream';
 import { createApp } from '../src/server.js';
 import { signTicket } from '../src/auth.js';
 
+test('Bilibili binding is admin-only, same-origin and exposes a local QR image instead of credentials', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-account-api-'));
+  const config = { secret: 'test-secret-01234567890123456789012345', audience: 'http://localhost:9300', issuer: 'https://chat.example.com', dataDir: root, libraryDir: path.join(root, 'library'), hosts: [] };
+  let owner; let cancelled; let removed = false;
+  const instance = createApp(config, { account: {
+    cookieHeader: () => 'SESSDATA=hidden', publicStatus: async () => ({ connected: false }),
+    start: async id => { owner = id; return { id: 'flow', qrUrl: 'https://account.bilibili.com/h5/account-h5/auth/scan-web?qrcode_key=secret', expiresAt: Date.now() + 180000 }; },
+    poll: async (id, flow) => { assert.equal(id, owner); assert.equal(flow, 'flow'); return { status: 'waiting' }; },
+    remove: async () => { removed = true; }, cancel: id => { cancelled = id; },
+  } });
+  const server = instance.app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
+  t.after(async () => { instance.close(); await new Promise(resolve => server.close(resolve)); fs.rmSync(root, { recursive: true, force: true }); });
+  const base = `http://127.0.0.1:${server.address().port}`; let cookie = '';
+  const call = (url, body, origin = config.audience) => fetch(base + url, { method: body ? 'POST' : 'GET', headers: { Origin: origin, Cookie: cookie, 'X-Watch-Request': '1', 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  assert.equal((await call('/api/bilibili/account')).status, 401);
+  for (const admin of [false, true]) {
+    const now = Math.floor(Date.now() / 1000);
+    const response = await call('/api/session', { ticket: signTicket({ v: 1, iss: config.issuer, aud: config.audience, iat: now, exp: now + 60, jti: (admin ? '2' : '1').repeat(32), sub: 'a'.repeat(24), room: 'b'.repeat(24), name: 'test', canControl: true, admin }, config.secret) });
+    cookie = response.headers.get('set-cookie').split(';')[0];
+    assert.equal((await call('/api/bilibili/account')).status, admin ? 200 : 403);
+    if (!admin) for (const route of ['login', 'poll', 'logout', 'refresh']) assert.equal((await call(`/api/bilibili/account/${route}`, {})).status, 403);
+  }
+  assert.equal((await call('/api/bilibili/account/login', {}, 'https://evil.example')).status, 403);
+  const login = await (await call('/api/bilibili/account/login', {})).json();
+  assert.match(login.qrImage, /^data:image\/png;base64,/); assert.equal(login.qrUrl, undefined);
+  assert.equal(JSON.stringify(login).includes('SESSDATA'), false);
+  assert.equal((await (await call('/api/bilibili/account/poll', { id: login.id })).json()).status, 'waiting');
+  assert.equal((await call('/api/bilibili/account/logout', {})).status, 200); assert.equal(removed, true);
+  await call('/api/logout', {}); assert.equal(cancelled, owner);
+});
+
 test('Bilibili proxy scopes tracks to the room/version and never exposes upstream URLs', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-proxy-'));
   const room = 'b'.repeat(24); const secret = 'test-only-secret-01234567890123456789';

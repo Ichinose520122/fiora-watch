@@ -4,8 +4,8 @@ let state; let activeTab = 'online'; let busy = false; let noticeTimer; let cata
 let catalogLoading = false; let searchLoading = false; let searchPage = 0; let searchQuery = ''; let downloading = false;
 const bytes = value => `${(value / 1024 ** 3).toFixed(2)} GB`;
 function notice(text, error = false) { clearTimeout(noticeTimer); $('notice').textContent = text; $('notice').hidden = !text; $('notice').classList.toggle('error', error); if (!error && text) noticeTimer = setTimeout(() => { $('notice').hidden = true; }, 3500); }
-async function api(url, body) {
-  const response = await fetch(url, { method: body === undefined ? 'GET' : 'POST', signal: AbortSignal.timeout(45000), headers: { 'Content-Type': 'application/json', 'X-Watch-Request': '1', 'X-Watch-Room': room || '' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+async function api(url, body, signal) {
+  const response = await fetch(url, { method: body === undefined ? 'GET' : 'POST', signal: signal || AbortSignal.timeout(45000), headers: { 'Content-Type': 'application/json', 'X-Watch-Request': '1', 'X-Watch-Room': room || '' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const result = await response.json(); if (!response.ok) throw new Error(result.error || '请求失败'); return result;
 }
 function attempt(task) { return Promise.resolve().then(task).catch(error => notice(error.message, true)); }
@@ -18,7 +18,7 @@ function refreshControls() {
   $('download-episode').disabled = downloading || catalogLoading || !catalog?.episodes?.[selectedIndex];
   document.querySelectorAll('[data-library-play]').forEach(button => { button.disabled = busy || !state?.canControl; });
 }
-async function refreshState() { state = await api('/api/state'); $('identity').textContent = state.user.name; $('download-tab').hidden = !state.user.admin; $('current-title').textContent = state.media?.title || '未选择'; refreshControls(); }
+async function refreshState() { state = await api('/api/state'); $('identity').textContent = state.user.name; $('download-tab').hidden = $('bilibili-tab').hidden = !state.user.admin; $('current-title').textContent = state.media?.title || '未选择'; refreshControls(); }
 async function select(media) {
   if (busy || !state?.canControl) return;
   busy = true; refreshControls();
@@ -116,7 +116,125 @@ async function downloads() {
 }
 $('refresh-library').onclick = () => attempt(library);
 $('download-form').onsubmit = event => { event.preventDefault(); attempt(() => download($('download-source').value.trim())); };
-document.querySelectorAll('[data-tab]').forEach(tab => { tab.onclick = () => { activeTab = tab.dataset.tab; document.querySelectorAll('[data-tab]').forEach(node => node.classList.toggle('active', node === tab)); for (const name of ['online', 'local', 'download']) $(`${name}-panel`).hidden = name !== activeTab; if (activeTab === 'local') attempt(library); if (activeTab === 'download') attempt(downloads); }; });
+let bilibiliAccount; let accountTask = ''; let accountVersion = 0;
+let qrSession; let qrTimer; let qrController; let qrPolling = false; let qrGeneration = 0; let pageLeaving = false;
+function accountTime(value) {
+  if (!value) return 0;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric * (numeric < 1e12 ? 1000 : 1) : Date.parse(value);
+}
+function renderAccount() {
+  const unavailable = !!(bilibiliAccount?.error || bilibiliAccount?.expired);
+  const connected = !!bilibiliAccount?.connected && !unavailable;
+  $('bilibili-name').textContent = connected ? bilibiliAccount.username || '已登录账号' : '尚未绑定账号';
+  $('bilibili-status').textContent = accountTask === 'loading' && !bilibiliAccount ? '读取中…' : unavailable ? '请重新绑定' : connected ? '已连接' : '未连接';
+  $('bilibili-status').classList.toggle('connected', connected);
+  $('bilibili-vip').hidden = !connected || !bilibiliAccount.vip;
+  $('bilibili-refresh').disabled = $('bilibili-login').disabled = $('bilibili-logout').disabled = $('bilibili-retry').disabled = !!accountTask;
+  $('bilibili-refresh').textContent = ['refresh', 'loading'].includes(accountTask) ? '刷新中…' : '刷新状态';
+  $('bilibili-login').textContent = accountTask === 'login' ? '获取二维码…' : unavailable ? '重新绑定' : connected ? '更换账号' : '扫码登录';
+  $('bilibili-login').hidden = !!qrSession;
+  $('bilibili-logout').hidden = !connected && !unavailable;
+  $('bilibili-logout').textContent = accountTask === 'logout' ? '解除中…' : '解除绑定';
+  const checked = accountTime(bilibiliAccount?.checkedAt);
+  $('bilibili-checked').textContent = Number.isFinite(checked) && checked > 0 ? `更新于 ${new Date(checked).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '';
+  $('bilibili-qr').hidden = !qrSession;
+  if (qrSession) {
+    const live = ['waiting', 'scanned'].includes(qrSession.status);
+    $('bilibili-qr-image').hidden = !live;
+    $('bilibili-qr').classList.toggle('qr-inactive', !live);
+    $('bilibili-qr-status').textContent = ({ waiting: '等待扫码', scanned: '已扫码，请在手机上确认', expired: '二维码已过期', error: '登录暂未完成，请重新扫码' })[qrSession.status] || '等待扫码';
+    $('bilibili-retry').hidden = live;
+  }
+}
+function stopQrPolling(clear = false) {
+  clearTimeout(qrTimer); qrTimer = undefined; qrGeneration += 1;
+  qrController?.abort(); qrController = undefined;
+  if (clear) { qrSession = undefined; $('bilibili-qr-image').removeAttribute('src'); renderAccount(); }
+}
+function canPollQr() {
+  return !pageLeaving && !document.hidden && activeTab === 'bilibili' && state?.user.admin && qrSession && ['waiting', 'scanned'].includes(qrSession.status);
+}
+function queueQrPoll() {
+  clearTimeout(qrTimer);
+  if (!canPollQr()) return;
+  if (Date.now() >= qrSession.expiresAt) { qrSession.status = 'expired'; renderAccount(); return; }
+  qrTimer = setTimeout(pollQr, 3000);
+}
+async function pollQr() {
+  if (!canPollQr()) return;
+  if (Date.now() >= qrSession.expiresAt) { qrSession.status = 'expired'; renderAccount(); return; }
+  if (qrPolling) { queueQrPoll(); return; }
+  const id = qrSession.id; const generation = qrGeneration; const controller = new AbortController();
+  qrPolling = true; qrController = controller;
+  const timeout = setTimeout(() => controller.abort(), 45000);
+  try {
+    const result = await api('/api/bilibili/account/poll', { id }, controller.signal);
+    if (generation !== qrGeneration || !canPollQr() || qrSession.id !== id) return;
+    if (result.status === 'connected') {
+      accountVersion += 1; bilibiliAccount = result.account || { connected: true };
+      stopQrPolling(true); renderAccount(); notice('登录成功，重新加载视频即可使用新清晰度。');
+      if (!result.account) attempt(() => loadAccount());
+      return;
+    }
+    if (!['waiting', 'scanned', 'expired'].includes(result.status)) throw new Error('登录状态暂不可用');
+    qrSession.status = result.status; renderAccount();
+  } catch (error) {
+    if (generation === qrGeneration && qrSession?.id === id) {
+      qrSession.status = 'error'; renderAccount();
+      notice(controller.signal.aborted ? '查询登录状态超时，请重新扫码。' : error.message || '登录状态暂不可用，请重新扫码。', true);
+    }
+  } finally {
+    clearTimeout(timeout); qrPolling = false;
+    if (qrController === controller) qrController = undefined;
+    if (generation === qrGeneration) queueQrPoll();
+  }
+}
+async function loadAccount(refresh = false) {
+  if (!state?.user.admin || accountTask || pageLeaving) return;
+  const version = ++accountVersion; accountTask = refresh ? 'refresh' : 'loading'; renderAccount();
+  try {
+    const result = await api(`/api/bilibili/account${refresh ? '/refresh' : ''}`, refresh ? {} : undefined);
+    if (version === accountVersion && !pageLeaving) {
+      bilibiliAccount = result;
+      if (result.error) notice('账号信息暂不可用，请重新绑定。', true);
+      else if (result.expired) notice('账号登录已过期，请重新绑定。', true);
+    }
+  } finally { accountTask = ''; renderAccount(); }
+}
+async function loginAccount() {
+  if (!state?.user.admin || accountTask || pageLeaving) return;
+  stopQrPolling(true); accountVersion += 1; accountTask = 'login'; renderAccount();
+  try {
+    const result = await api('/api/bilibili/account/login', {});
+    if (pageLeaving) return;
+    const expiresAt = accountTime(result.expiresAt);
+    if (!result.id || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(result.qrImage || '') || !Number.isFinite(expiresAt) || !expiresAt) throw new Error('二维码暂不可用，请重试');
+    qrSession = { id: result.id, expiresAt, status: 'waiting' };
+    $('bilibili-qr-image').src = result.qrImage; renderAccount(); queueQrPoll();
+  } finally { accountTask = ''; renderAccount(); }
+}
+async function logoutAccount() {
+  if (!state?.user.admin || accountTask || pageLeaving) return;
+  stopQrPolling(true); accountVersion += 1; accountTask = 'logout'; renderAccount();
+  try { bilibiliAccount = await api('/api/bilibili/account/logout', {}); notice('已解除绑定'); }
+  finally { accountTask = ''; renderAccount(); }
+}
+$('bilibili-refresh').onclick = () => attempt(() => loadAccount(true));
+$('bilibili-login').onclick = $('bilibili-retry').onclick = () => attempt(loginAccount);
+$('bilibili-logout').onclick = () => attempt(logoutAccount);
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopQrPolling(); else queueQrPoll(); });
+window.addEventListener('pagehide', () => { pageLeaving = true; stopQrPolling(); });
+window.addEventListener('pageshow', () => { pageLeaving = false; queueQrPoll(); });
+document.querySelectorAll('[data-tab]').forEach(tab => { tab.onclick = () => {
+  if (['bilibili', 'download'].includes(tab.dataset.tab) && !state?.user.admin) return;
+  stopQrPolling(); activeTab = tab.dataset.tab;
+  document.querySelectorAll('[data-tab]').forEach(node => node.classList.toggle('active', node === tab));
+  for (const name of ['online', 'local', 'download', 'bilibili']) $(`${name}-panel`).hidden = name !== activeTab;
+  if (activeTab === 'local') attempt(library);
+  if (activeTab === 'download') attempt(downloads);
+  if (activeTab === 'bilibili') { attempt(() => loadAccount()); queueQrPoll(); }
+}; });
 setInterval(() => { if (state?.user.admin && activeTab === 'download') attempt(downloads); }, 4000);
 attempt(async () => {
   if (!room) return; $('home').href = $('back').href = `/room/${room}`;

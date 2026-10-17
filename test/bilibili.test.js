@@ -1,10 +1,23 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildBilibiliManifest, isBilibiliUrl, listBilibiliEpisodes, resolveBilibili, validateByteRange } from '../src/bilibili.js';
+import { authenticatedBilibiliReader, buildBilibiliManifest, isBilibiliUrl, listBilibiliEpisodes, resolveBilibili, validateByteRange } from '../src/bilibili.js';
 
 const bvid = 'BV1xx411c7mD';
 const view = { bvid, title: '测试 & 视频', pic: 'http://i1.hdslb.com/bfs/archive/test.jpg', rights: {}, pages: [{ page: 1, cid: 101, part: '开场' }, { page: 2, cid: 102, part: '第二部分' }] };
 const track = (type, overrides = {}) => ({ id: 32, baseUrl: `https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/test.${type}.m4s?token=secret`, codecs: type === 'video' ? 'avc1.64001E' : 'mp4a.40.2', mimeType: `${type}/mp4`, bandwidth: 100000, width: 640, height: 360, frameRate: '30', SegmentBase: { Initialization: '0-999', indexRange: '1000-1999' }, ...overrides });
+test('account credentials reach only official HTTPS API/pages and quality is not capped at 720p', async () => {
+  const calls = [];
+  const read = authenticatedBilibiliReader({ cookieHeader: () => 'SESSDATA=test-secret' }, async (url, _hosts, _signal, options) => {
+    calls.push({ url: new URL(url), headers: options.headers }); return reader()(url);
+  });
+  await resolveBilibili(bvid, [], read);
+  const play = calls.find(call => call.url.pathname.endsWith('/playurl'));
+  assert.equal(play.url.searchParams.get('qn'), '127'); assert.equal(play.url.searchParams.get('fourk'), '1');
+  assert.equal(play.headers.Cookie, 'SESSDATA=test-secret');
+  for (const url of ['https://b23.tv/abc', 'https://foo.bilivideo.com/a.m4s', 'http://api.bilibili.com/test', 'https://api.bilibili.com.evil/test']) {
+    await read(url, [], undefined, {}); assert.equal(calls.at(-1).headers.Cookie, undefined);
+  }
+});
 function reader(play = { dash: { duration: 30, video: [track('video')], audio: [track('audio')] } }, metadata = view) {
   return async url => ({ url, text: JSON.stringify({ code: 0, data: new URL(url).pathname.endsWith('/view') ? metadata : play }) });
 }

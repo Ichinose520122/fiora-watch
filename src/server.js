@@ -8,7 +8,9 @@ import { resolveMedia } from './resolver.js';
 import { loadConfig } from './config.js';
 import { createChatBridge } from './chat.js';
 import { createCatalog } from './catalog.js';
-import { isBilibiliUrl, listBilibiliEpisodes, resolveBilibili, buildBilibiliManifest, requestBilibiliTrack } from './bilibili.js';
+import { isBilibiliUrl, listBilibiliEpisodes, resolveBilibili, buildBilibiliManifest, requestBilibiliTrack, authenticatedBilibiliReader } from './bilibili.js';
+import { BilibiliAccount } from './bilibili-account.js';
+import QRCode from 'qrcode';
 import { pipeline } from 'node:stream/promises';
 
 export const SESSION_MS = 180 * 60000;
@@ -20,7 +22,10 @@ export function createApp(config, dependencies = {}) {
   const store = dependencies.store || new Store(config.dataDir);
   const sessions = new Map(); const streams = new Set(); const limits = new Map();
   const library = dependencies.library || new MediaLibrary(config, store);
-  const resolve = dependencies.resolve || resolveMedia;
+  const account = dependencies.account || new BilibiliAccount(config);
+  const readBilibili = authenticatedBilibiliReader(account);
+  const resolveBili = input => resolveBilibili(input, config.hosts, readBilibili);
+  const resolve = dependencies.resolve || ((input, hosts) => isBilibiliUrl(input) ? resolveBili(input) : resolveMedia(input, hosts));
   const chat = dependencies.chat || createChatBridge(config);
   const catalog = dependencies.catalog || createCatalog(config.hosts);
   const requestTrack = dependencies.requestTrack || requestBilibiliTrack;
@@ -66,6 +71,24 @@ export function createApp(config, dependencies = {}) {
   };
   app.use('/api', authenticate);
   app.use('/api', (req, res, next) => req.method === 'POST' ? sameOrigin(req, res, next) : next());
+  const admin = (req, res, next) => req.session.user.admin ? next() : res.status(403).json({ error: '只有站点管理员可以使用此功能' });
+  app.get('/api/bilibili/account', admin, async (_req, res) => res.json(await account.publicStatus()));
+  app.post('/api/bilibili/account/refresh', admin, async (req, res) => {
+    throttle(`bili-refresh:${req.session.user.id}`, 6);
+    res.json(await account.publicStatus({ refresh: true }));
+  });
+  app.post('/api/bilibili/account/login', admin, async (req, res) => {
+    throttle(`bili-login:${req.session.user.id}`, 6);
+    const result = await account.start(cookieId(req));
+    res.json({ id: result.id, expiresAt: result.expiresAt, qrImage: await QRCode.toDataURL(result.qrUrl, { width: 256, margin: 2, errorCorrectionLevel: 'M' }) });
+  });
+  app.post('/api/bilibili/account/poll', admin, async (req, res) => {
+    throttle(`bili-poll:${req.session.user.id}`, 30);
+    res.json(await account.poll(cookieId(req), req.body?.id));
+  });
+  app.post('/api/bilibili/account/logout', admin, async (_req, res) => {
+    await account.remove(); res.json(await account.publicStatus());
+  });
   const roomAccess = (req, res, next) => {
     const roomId = req.headers['x-watch-room'] || req.query.room;
     if (typeof roomId !== 'string' || !/^(?:[a-f0-9]{24}|[a-f0-9]{48})$/.test(roomId)) return res.status(400).json({ error: '房间编号无效' });
@@ -91,7 +114,7 @@ export function createApp(config, dependencies = {}) {
   });
   app.get('/api/catalog/episodes', roomAccess, async (req, res) => {
     throttle(`catalog:${req.session.user.id}`, 30);
-    res.json(isBilibiliUrl(req.query.url) ? await listBilibiliEpisodes(req.query.url) : await catalog.episodes(req.query.url));
+    res.json(isBilibiliUrl(req.query.url) ? await listBilibiliEpisodes(req.query.url, config.hosts, readBilibili) : await catalog.episodes(req.query.url));
   });
   const bilibiliAccess = (req, res, next) => {
     if (!req.room.media?.bilibili || String(req.room.mediaVersion) !== req.query.version) return res.status(404).json({ error: '影片已切换，请刷新播放页' });
@@ -114,7 +137,7 @@ export function createApp(config, dependencies = {}) {
         // Refresh expired CDN links, retaining exactly the same DASH representations.
         if (!/HTTP (403|410)/.test(error.message)) throw error;
         const key = `${req.room.id}:${req.query.version}`;
-        if (!refreshing.has(key)) refreshing.set(key, resolveBilibili(media.source).finally(() => refreshing.delete(key)));
+        if (!refreshing.has(key)) refreshing.set(key, resolveBili(media.source).finally(() => refreshing.delete(key)));
         const renewed = await refreshing.get(key);
         if (req.room.media !== media) return res.sendStatus(409);
         const replacements = media.bilibili.tracks.map(old => renewed.bilibili.tracks.find(track => track.id === old.id && track.codecs === old.codecs && track.bandwidth === old.bandwidth && track.initialization === old.initialization && track.indexRange === old.indexRange));
@@ -185,11 +208,11 @@ export function createApp(config, dependencies = {}) {
     res.json({ ok: true, ...(warning ? { warning } : {}) });
   });
   app.get('/api/library', (_req, res) => res.json({ items: library.list() }));
-  const admin = (req, res, next) => req.session.user.admin ? next() : res.status(403).json({ error: '只有站点管理员可以管理下载' });
   app.get('/api/downloads', admin, (_req, res) => res.json({ jobs: store.data.jobs, usedBytes: library.usedBytes(), quota: config.cacheBytes }));
   app.post('/api/downloads', admin, (req, res) => { throttle(`download:${req.session.user.id}`, 10); res.json(library.enqueue(req.body.url, req.session.user.id)); });
   app.post('/api/downloads/:id/remove', admin, (req, res) => { library.cancel(req.params.id); res.json({ ok: true }); });
   app.post('/api/logout', (req, res) => {
+    account.cancel(cookieId(req));
     const session = req.session; sessions.delete(cookieId(req));
     for (const stream of streams) if (stream.session === session) { stream.res.end(); streams.delete(stream); }
     res.clearCookie('watch_session', { path: '/' }); res.json({ ok: true });
@@ -217,7 +240,7 @@ export function createApp(config, dependencies = {}) {
       if (stream.grant.expires <= now) { stream.res.end(); streams.delete(stream); }
       else stream.res.write(`data: ${JSON.stringify(snapshot(stream.room, stream.session, stream.grant))}\n\n`);
     }
-    for (const [id, session] of sessions) if (!Object.values(session.grants).some(grant => grant.expires > now)) sessions.delete(id);
+    for (const [id, session] of sessions) if (!Object.values(session.grants).some(grant => grant.expires > now)) { account.cancel(id); sessions.delete(id); }
     for (const [key, value] of limits) if (value.since < now - 60000) limits.delete(key);
   }, 5000);
   timer.unref();
