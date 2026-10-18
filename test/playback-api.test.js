@@ -43,7 +43,7 @@ test('delivery setting requires admin/CSRF, persists and applies only to the nex
   await call('/api/settings/playback', admin, { bilibiliDelivery: 'proxy' });
   await call('/api/media', admin, { mode: 'online', url: media.source, revision: 0 });
   let state = await (await call('/api/state', viewer)).json();
-  assert.equal(state.media.playbackMode, 'proxy'); assert.equal(state.position, 0); assert.equal(state.paused, true);
+  assert.equal(state.media.playbackMode, 'proxy'); assert.equal(state.position, 0); assert.equal(state.paused, false);
   await call('/api/settings/playback', admin, { bilibiliDelivery: 'direct' });
   assert.equal(JSON.parse(fs.readFileSync(path.join(config.dataDir, 'state.json'))).settings.bilibiliDelivery, 'direct');
   assert.equal((await (await call('/api/state', viewer)).json()).media.playbackMode, 'proxy');
@@ -51,7 +51,7 @@ test('delivery setting requires admin/CSRF, persists and applies only to the nex
   await call('/api/media', admin, { mode: 'online', url: media.source + '?t=70', revision: 2 });
   state = await (await call('/api/state', viewer)).json();
   assert.equal(state.media.playbackMode, 'direct'); assert.equal(state.position, 0);
-  assert.equal(state.paused, true); assert.equal(state.media.qualities[0].label, '1080P');
+  assert.equal(state.paused, false); assert.equal(state.media.qualities[0].label, '1080P');
   assert.doesNotMatch(JSON.stringify(state), /secret=private|bilibili":|login_mid/);
   const manifest = await (await call(state.media.url, viewer)).text();
   assert.match(manifest, /https:\/\/example\.bilivideo\.com\/video\.m4s/);

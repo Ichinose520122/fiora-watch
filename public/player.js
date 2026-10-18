@@ -129,6 +129,7 @@ export function createPlayer({ video, document: doc = document, subtitles, notif
   }
   function begin(next, version, { preserve = false } = {}) {
     generation += 1; subtitleRequest?.abort(); hls = null; dash = null; ready = false; error = false;
+    element('player-error').hidden = true;
     media = next; qualityItems = []; backendSubtitles = []; subtitleState = ''; subtitleItems = [];
     pendingSubtitle = preserve ? subtitle : 'off';
     if (!preserve) { quality = 'auto'; subtitle = 'off'; }

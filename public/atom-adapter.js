@@ -24,6 +24,18 @@ export function mountAtomPlayer({ requestControl, document: doc = document }) {
     // Individual speed changes break a shared room's clock (including mobile long press).
     const rate = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'playbackRate');
     Object.defineProperty(video, 'playbackRate', { configurable: true, get() { return rate.get.call(this); }, set() { rate.set.call(this, 1); } });
+    // Room synchronization seeks the native video even while playback is paused.
+    // Atom's animation loop only updates its timeline while playing.
+    const updateTimeline = () => atom.emit('timeUpdate', video.currentTime, video.duration);
+    const updateMuted = () => atom.emit('muted', video.muted);
+    video.addEventListener('timeupdate', updateTimeline);
+    video.addEventListener('seeked', updateTimeline);
+    video.addEventListener('volumechange', updateMuted);
+    atom.on('destroy', () => {
+      video.removeEventListener('timeupdate', updateTimeline);
+      video.removeEventListener('seeked', updateTimeline);
+      video.removeEventListener('volumechange', updateMuted);
+    });
     const controls = atom.player.template.$right;
     for (const id of ['quality-button', 'subtitle-button']) controls.prepend(doc.getElementById(id).parentElement);
     controls.prepend(doc.getElementById('danmaku-toggle'));

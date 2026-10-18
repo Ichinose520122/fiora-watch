@@ -151,12 +151,15 @@ body.player-fullscreen{overflow:hidden}
 
 .delivery-status{position:absolute;left:15px;top:13px;z-index:2;padding:4px 9px;border-radius:5px;background:#080c15a8;color:#d5d0df;font-size:10px;line-height:1.6;pointer-events:none;transition:opacity .2s}
 .player-shell.controls-idle .delivery-status{opacity:0}
+.unmute-overlay{position:absolute;right:14px;top:14px;z-index:21;padding:7px 12px;border-radius:6px;border:1px solid #ffffff35;background:#101725dc;color:#fff;font-size:12px}
+.unmute-overlay:hover{background:#23324a}
 
 /* The actual Atom UI shares Watch's media engines and fullscreen surface. */
 #atom-mount{position:absolute;inset:0;width:100%;height:100%}
 .player-shell.uses-atom>.player-controls{display:none}
 .player-shell.uses-atom .atom-player{height:100%;font-family:system-ui,sans-serif;--color:#00a1d6}
 .player-shell.uses-atom .atom-video{height:100%;min-height:0;flex:1;background:#000}
+.player-shell.uses-atom .atom-layer-loading,.player-shell.uses-atom .atom-layer-loading *,.player-shell.uses-atom .atom-layer-error,.player-shell.uses-atom .atom-layer-error *{pointer-events:none!important}
 .player-shell.uses-atom video{position:absolute;inset:0;width:100%!important;height:100%!important;margin:0!important;object-fit:contain!important}
 .player-shell.uses-atom .atom-emitter,.player-shell.uses-atom .atom-danmu-emitter,.player-shell.uses-atom .atom-danmu-switch,.player-shell.uses-atom .atom-danmu-setting,.player-shell.uses-atom .atom-danmuku,.player-shell.uses-atom .atom-control-playBackRate{display:none!important}
 .player-shell.uses-atom .atom-controls{z-index:5;transition:opacity .2s}
@@ -167,10 +170,15 @@ body.player-fullscreen{overflow:hidden}
 .player-shell.uses-atom.controls-idle{cursor:none}
 .player-shell.uses-atom .atom-controls-right{gap:3px;overflow:visible}
 .player-shell.uses-atom .setting-button{font-size:12px;color:#fff;padding:7px 9px;min-height:32px}
-.player-shell.uses-atom .setting-button.selected,.player-shell.uses-atom #danmaku-toggle[aria-pressed=true]{color:#6ed4ff}
+.player-shell.uses-atom .setting-button:hover{background:#ffffff16;color:#fff}
+.player-shell.uses-atom .setting-button.selected,.player-shell.uses-atom #danmaku-toggle[aria-pressed=true]{color:#00a1d6}
 .player-shell.uses-atom .player-setting{overflow:visible}
-.player-shell.uses-atom .player-menu{z-index:10;bottom:calc(100% + 12px);font-family:system-ui,sans-serif}
+.player-shell.uses-atom .player-menu{z-index:10;bottom:calc(100% + 12px);font-family:system-ui,sans-serif;background:var(--panel-background,#202020ee);border:0;border-radius:4px;backdrop-filter:none;padding:6px;min-width:180px;box-shadow:0 4px 16px #0005}
 .player-shell.uses-atom .player-menu button,.player-shell.uses-atom .player-menu p{white-space:normal}
+.player-shell.uses-atom .player-menu button{color:#fff;border-radius:3px}
+.player-shell.uses-atom .player-menu button:hover{background:#ffffff16}
+.player-shell.uses-atom .player-menu button[aria-checked=true]{color:#00a1d6;background:transparent}
+.player-shell.uses-atom .player-menu-heading,.player-shell.uses-atom .player-menu-message{color:#bbb}
 .player-shell.uses-atom .player-error{z-index:22}
 .player-shell.uses-atom .join-overlay{z-index:21}
 .player-shell.uses-atom #empty{z-index:20}

@@ -2,12 +2,15 @@
 import { createPlayer } from './player.js';
 import { mountAtomPlayer } from './atom-adapter.js';
 import { createDanmaku } from './danmaku.js';
+import { loadMediaEngine } from './media-engine.js';
 const $ = id => document.getElementById(id);
 let room = /^\/room\/([a-f0-9]+)$/.exec(location.pathname)?.[1];
-let state; let receivedAt = 0; let currentMedia = ''; let mediaVersion = -1; let hls; let dash; let enabled = false; let events; let applying = false; let controlBusy = false; let episodeBusy = false; let episodeSignature = '';
+let state; let receivedAt = 0; let currentMedia = ''; let mediaVersion = -1; let hls; let dash; let enabled = true; let events; let applying = false; let controlBusy = false; let episodeBusy = false; let episodeSignature = '';
 let chatBusy = false; let sending = false; let lastMessages = ''; let pendingSend; let scrollAfterSend = false; let noticeTimer;
 let sourceGeneration = 0; let fallbackUsed = false; let activeSource = ''; let activeDelivery = ''; let playAttempt = 0; let locallySeeking = false;
 let seekTimer;
+let autoplayBlocked = false; let autoMuted = false;
+let pendingSeek = false; let queuedPlayback; let inflightPlayback; let drainingPlayback = false;
 const atomShell = mountAtomPlayer({ requestControl: requestPlayerControl });
 const video = atomShell.video;
 const danmaku = createDanmaku({ container: $('danmaku-layer'), button: $('danmaku-toggle'), video });
@@ -35,18 +38,35 @@ function playbackStatus() {
   $('playback-status').textContent = [!state?.media ? '等待选择影片' : state.canControl ? '与你同步' : '跟随房间播放', mode].filter(Boolean).join(' · ');
   $('delivery-status').textContent = mode; $('delivery-status').hidden = !mode;
 }
-function synchronize() {
-  if (!state?.media || video.readyState < 1 || !enabled || applying || locallySeeking) return;
+function synchronize({ forceSeek = false } = {}) {
+  if (!state?.media) return;
+  if (forceSeek) pendingSeek = true;
+  if (state.paused) video.pause();
+  if (video.readyState < 1 || locallySeeking) return;
   const goal = Math.min(target(), Number.isFinite(video.duration) ? video.duration : Infinity);
-  if (Math.abs(video.currentTime - goal) > 1.2) video.currentTime = goal;
-  if (state.paused) { video.pause(); return; }
-  if (video.paused && !video.ended) {
-    applying = true; const attempt = ++playAttempt; const generation = sourceGeneration;
-    video.play().catch(error => { if (generation === sourceGeneration && attempt === playAttempt && error.name !== 'AbortError') { enabled = false; $('join').hidden = false; } }).finally(() => { if (attempt === playAttempt) applying = false; });
+  if (pendingSeek || (!applying && Math.abs(video.currentTime - goal) > 1.2)) { video.currentTime = goal; pendingSeek = false; }
+  if (!applying && !state.paused && enabled && video.paused && !video.ended) void playLocal();
+}
+async function playLocal({ manual = false } = {}) {
+  applying = true; const attempt = ++playAttempt; const generation = sourceGeneration;
+  const current = () => generation === sourceGeneration && attempt === playAttempt;
+  try { await video.play(); }
+  catch (error) {
+    if (!current() || (state?.paused && !manual) || error.name !== 'NotAllowedError') return;
+    // Autoplay policy may allow silent playback even when audible play is blocked.
+    if (!video.muted) {
+      video.muted = true; autoMuted = true; $('unmute').hidden = false;
+      try { await video.play(); return; }
+      catch (retryError) { if (!current() || retryError.name !== 'NotAllowedError') return; }
+    }
+    if (current()) { autoplayBlocked = true; enabled = false; $('join').hidden = false; }
+  } finally {
+    if (current()) { applying = false; if (state?.paused || !enabled) video.pause(); }
   }
 }
 function loadMedia(source, { preserve = false } = {}) {
   const generation = ++sourceGeneration; activeSource = source; playAttempt += 1; applying = false;
+  pendingSeek = Boolean(source); if (!preserve) queuedPlayback = undefined;
   clearTimeout(seekTimer); locallySeeking = false; danmaku.clear(); atomShell.reset();
   activeDelivery = !source ? '' : fallbackUsed && source === state?.media?.fallbackUrl ? 'proxy' : state?.media?.playbackMode || ''; playbackStatus();
   video.onerror = null; $('seek').value = String(Math.max(0, target()));
@@ -61,23 +81,31 @@ function loadMedia(source, { preserve = false } = {}) {
     }
     player.fail('影片暂时无法加载，请重试或更换片源。'); notice('影片暂时无法加载，请重试或更换片源。', true);
   };
-  if (state.media.kind === 'dash') {
-    if (typeof dashjs === 'undefined') { player.fail('播放器未就绪，请刷新后重试。'); return; }
-    const instance = dashjs.MediaPlayer().create(); dash = instance;
-    instance.updateSettings({ streaming: { buffer: { bufferTimeDefault: 30 } } });
-    player.attachDash(instance, dashjs.MediaPlayer.events);
-    instance.on(dashjs.MediaPlayer.events.ERROR, event => { if (event.error) failed(); });
-    instance.initialize(video, source, false);
-  } else if (state.media.kind === 'hls' && typeof Hls !== 'undefined' && Hls.isSupported()) {
-    const instance = new Hls({ maxBufferLength: 30, maxMaxBufferLength: 60 }); hls = instance;
-    player.attachHls(instance, Hls.Events); instance.loadSource(source); instance.attachMedia(video);
-    instance.on(Hls.Events.ERROR, (_event, data) => { if (data.fatal) failed(); });
-  } else video.src = source;
-  video.onerror = () => { if (video.error) failed(); };
+  const kind = state.media.kind;
+  void loadMediaEngine(kind, video).then(() => {
+    if (generation !== sourceGeneration) return;
+    if (kind === 'dash') {
+      if (typeof dashjs === 'undefined') { player.fail('播放器未就绪，请刷新后重试。'); return; }
+      const instance = dashjs.MediaPlayer().create(); dash = instance;
+      instance.updateSettings({ streaming: { buffer: { bufferTimeDefault: 30 } } });
+      player.attachDash(instance, dashjs.MediaPlayer.events);
+      instance.on(dashjs.MediaPlayer.events.ERROR, event => { if (event.error) failed(); });
+      instance.initialize(video, source, false);
+    } else if (kind === 'hls' && typeof Hls !== 'undefined' && Hls.isSupported()) {
+      const instance = new Hls({ maxBufferLength: 30, maxMaxBufferLength: 60 }); hls = instance;
+      player.attachHls(instance, Hls.Events); instance.loadSource(source); instance.attachMedia(video);
+      instance.on(Hls.Events.ERROR, (_event, data) => { if (data.fatal) failed(); });
+    } else video.src = source;
+    video.onerror = () => { if (video.error) failed(); };
+  }).catch(error => {
+    if (generation === sourceGeneration) { player.fail(error.message || '播放组件加载失败，请重试。'); notice(error.message || '播放组件加载失败，请重试。', true); }
+  });
 }
 function receive(next) {
   if (state && next.revision < state.revision) return;
+  const pausedSeek = state && next.paused && next.revision > state.revision && next.position !== state.position && next.mediaVersion === state.mediaVersion;
   state = next; receivedAt = performance.now();
+  if (!next.canControl || !next.media) queuedPlayback = undefined;
   $('identity').textContent = next.user.name; $('logout').hidden = false;
   $('connection').textContent = next.paused ? '已暂停' : '同步播放中';
   $('title').textContent = next.media?.title || '今晚看什么？';
@@ -85,7 +113,7 @@ function receive(next) {
   $('back-to-fiora').href = next.fioraUrl;
   $('toggle').textContent = next.paused ? '▶' : 'Ⅱ'; $('toggle').setAttribute('aria-label', next.paused ? '播放' : '暂停');
   $('toggle').disabled = $('seek').disabled = !next.canControl || !next.media;
-  $('join').hidden = enabled || !next.media;
+  $('join').hidden = enabled || next.paused || !next.media;
   atomShell.update(next);
   renderEpisodes();
   const source = next.media?.url || '';
@@ -93,31 +121,56 @@ function receive(next) {
     currentMedia = source; mediaVersion = next.mediaVersion || 0; fallbackUsed = false; notice(''); video.poster = next.media?.cover || '';
     locallySeeking = false; loadMedia(source);
   }
-  synchronize();
+  synchronize({ forceSeek: Boolean(pausedSeek) });
 }
 async function action(action, extra = {}) {
-  if (controlBusy || !state?.canControl || !state.media || episodeBusy) return;
+  if (controlBusy || !state?.canControl || !state.media || episodeBusy) return false;
   controlBusy = true;
-  try { await api('/api/control', { action, revision: state.revision, ...extra }); receive(await api('/api/state')); }
+  try { await api('/api/control', { action, revision: state.revision, ...extra }); receive(await api('/api/state')); return true; }
   catch (error) { receive(await api('/api/state')); throw error; }
-  finally { controlBusy = false; }
+  finally { controlBusy = false; void drainPlayback(); }
 }
-function unlock() {
-  enabled = true; $('join').hidden = true; const generation = sourceGeneration;
-  return video.play().then(() => { if (generation === sourceGeneration) synchronize(); }).catch(error => { if (generation === sourceGeneration && error.name !== 'AbortError') { enabled = false; $('join').hidden = false; } });
+function effectivePaused() {
+  return queuedPlayback?.paused ?? (inflightPlayback?.version === mediaVersion ? inflightPlayback.paused : state?.paused);
+}
+async function drainPlayback() {
+  if (drainingPlayback || controlBusy) return;
+  drainingPlayback = true;
+  try {
+    while (queuedPlayback) {
+      const intent = queuedPlayback; queuedPlayback = undefined;
+      if (intent.version !== mediaVersion || !state?.canControl || !state.media || episodeBusy) continue;
+      inflightPlayback = intent;
+      if (intent.paused !== state.paused) await action(intent.paused ? 'pause' : 'play');
+      synchronize();
+    }
+  } catch (error) { notice(error.message, true); }
+  finally { inflightPlayback = undefined; drainingPlayback = false; if (queuedPlayback) void drainPlayback(); }
+}
+function queuePlayback(command) {
+  if (!state?.media || episodeBusy) return;
+  if (!state.canControl) {
+    if (!state.paused && (video.paused || !enabled)) void unlock();
+    else notice('当前房间由群主或管理员控制播放');
+    return;
+  }
+  const paused = command === 'toggle' ? !effectivePaused() : command === 'pause';
+  queuedPlayback = { paused, version: mediaVersion };
+  if (!paused) void unlock({ start: true });
+  void drainPlayback();
+}
+function unlock({ start = false } = {}) {
+  enabled = true; autoplayBlocked = false; $('join').hidden = true;
+  if (autoMuted) { video.muted = false; autoMuted = false; $('unmute').hidden = true; }
+  if (state?.paused && !start) return Promise.resolve();
+  return playLocal({ manual: start });
 }
 function togglePlayback() {
-  if (!state?.media || controlBusy || episodeBusy) return;
-  if (!state.canControl) { if (!enabled) void unlock(); return; }
-  const command = state.paused ? 'play' : 'pause';
-  if (command === 'play' && !enabled) {
-    void unlock();
-  }
-  attempt(() => action(command));
+  queuePlayback('toggle');
 }
 function requestPlayerControl(command, position) {
   if (!state?.media || !activeSource || episodeBusy) return;
-  if (command === 'play' && !enabled) void unlock();
+  if (['toggle', 'play', 'pause'].includes(command)) { queuePlayback(command); return; }
   if (!state.canControl) return;
   if (command === 'seek') {
     if (!Number.isFinite(position) || video.readyState < 1) return;
@@ -127,14 +180,15 @@ function requestPlayerControl(command, position) {
     const commit = () => {
       if (generation !== sourceGeneration) return;
       if (controlBusy) { seekTimer = setTimeout(commit, 100); return; }
-      attempt(async () => { try { await action('seek', { position: value }); } finally { locallySeeking = false; synchronize(); } });
+      attempt(async () => { let success = false; try { success = await action('seek', { position: value }); } finally { locallySeeking = false; synchronize({ forceSeek: success && generation === sourceGeneration }); } });
     };
     seekTimer = setTimeout(commit, 100);
     return;
   }
-  if (command === 'play' && state.paused || command === 'pause' && !state.paused) attempt(() => action(command));
 }
 $('join').onclick = () => state?.canControl && state.paused ? togglePlayback() : unlock();
+$('unmute').onclick = () => { video.muted = false; autoMuted = false; $('unmute').hidden = true; if (!state?.paused && video.paused) void unlock(); };
+video.addEventListener('volumechange', () => { if (!video.muted) { autoMuted = false; $('unmute').hidden = true; } });
 $('toggle').onclick = togglePlayback;
 if (!atomShell.active) video.addEventListener('click', togglePlayback);
 function adjacentEpisode(direction) {
@@ -175,7 +229,10 @@ async function selectEpisode(index) {
   finally { episodeBusy = false; renderEpisodes(); }
 }
 $('seek').oninput = () => { locallySeeking = true; };
-$('seek').onchange = event => { const position = Number(event.target.value); attempt(async () => { try { await action('seek', { position }); } finally { locallySeeking = false; synchronize(); } }); };
+$('seek').onchange = event => {
+  const position = Number(event.target.value); const generation = sourceGeneration;
+  attempt(async () => { let success = false; try { success = await action('seek', { position }); } finally { locallySeeking = false; synchronize({ forceSeek: success && generation === sourceGeneration }); } });
+};
 $('seek').onblur = () => { locallySeeking = false; synchronize(); };
 $('volume').oninput = event => { video.volume = Number(event.target.value); };
 $('retry-player').onclick = () => { if (state?.media) { notice(''); loadMedia(fallbackUsed ? state.media.fallbackUrl : currentMedia, { preserve: true }); } };
@@ -243,6 +300,7 @@ attempt(async () => {
   receive(await api('/api/state')); void refreshChat();
   if (!atomShell.active) notice('Atom 播放器未能加载，暂用基础播放器；刷新页面可重试。', true);
   events = new EventSource(`/api/events?room=${encodeURIComponent(room)}`);
-  events.onmessage = event => receive(JSON.parse(event.data));
+  events.onopen = () => { $('connection').textContent = '正在同步'; };
+  events.onmessage = event => { const next = JSON.parse(event.data); enabled = !autoplayBlocked; receive(next); };
   events.onerror = () => { video.pause(); enabled = false; $('join').hidden = !state?.media; $('connection').textContent = '重新连接中'; };
 });

@@ -14,7 +14,7 @@ does not assert an open-source license. Review that status before redistribution
 
 `APlayer.watch.js` adds narrow Watch integration hooks to the original bundle:
 
-- `watchControl(action, position)` routes play, pause and desktop/mobile seeking
+- `watchControl(action, position)` routes toggle, play, pause and desktop/mobile seeking
   through the room API. Seeking does not automatically start a paused room.
 - Internal load/error/end/destroy pauses use the native video without generating
   room commands. Watch owns HLS/DASH loading, quality and external subtitle menus.
@@ -31,3 +31,18 @@ creates the player, and `danmaku.js` displays escaped live chat messages. The
 adapter locks local playback rate at 1 to maintain the shared room clock.
 The unused Web Audio enhancement plugin is skipped too, avoiding silent audio
 when an external progressive MP4 cannot be used as a CORS-enabled audio source.
+
+Additional Watch compatibility behavior:
+
+- Mobile taps on the video toggle play/pause; double taps toggle fullscreen.
+  Existing video-only gesture bindings preserve independent control/menu clicks.
+- The adapter forwards native `timeupdate` and `seeked` events to Atom so room
+  seeks update the timeline while paused; listeners are removed on destruction.
+- Keyboard handling prevents defaults only for registered player shortcuts and
+  skips interactive controls, links, editable content and menu widgets.
+- Desktop video clicks and mobile taps send `toggle`, resolved against the latest
+  pending room intent rather than the local video's possibly buffering state.
+  Desktop click counting clears its old timer before starting a new one.
+- Watch CSS disables pointer events on decorative loading/error descendants;
+  Atom's generic layer-child rule otherwise makes the center spinner eat clicks.
+- Native volume changes refresh Atom's mute icon, including silent autoplay.

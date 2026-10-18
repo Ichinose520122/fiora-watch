@@ -13,6 +13,7 @@ import { listBilibiliSubtitles, fetchBilibiliSubtitle } from './bilibili-subtitl
 import { BilibiliAccount } from './bilibili-account.js';
 import QRCode from 'qrcode';
 import { pipeline } from 'node:stream/promises';
+import { publicAssets } from './assets.js';
 
 export const SESSION_MS = 180 * 60000;
 
@@ -252,7 +253,7 @@ export function createApp(config, dependencies = {}) {
     } else if (req.body.mode !== 'clear') throw new Error('播放模式无效');
     if (req.grant.expires <= Date.now() || revision !== req.room.revision) throw new Error('房间状态已改变，请刷新后重新选择');
     if (media?.bilibili) media.playbackMode = playbackSettings().bilibiliDelivery;
-    Object.assign(req.room, { media, mediaVersion: req.room.revision + 1, paused: true, position: 0, updatedAt: Date.now(), revision: req.room.revision + 1 });
+    Object.assign(req.room, { media, mediaVersion: req.room.revision + 1, paused: !media, position: 0, updatedAt: Date.now(), revision: req.room.revision + 1 });
     store.save(); publish(req.room);
     // Serialize cover/title changes so a slow earlier choice cannot overwrite a newer card.
     const selected = media;
@@ -290,8 +291,7 @@ export function createApp(config, dependencies = {}) {
       return res.sendFile(file, { dotfiles: 'deny', cacheControl: false }, error => { if (error && !res.headersSent) res.sendStatus(error.status === 416 ? 416 : 404); });
     } catch { return res.sendStatus(404); }
   });
-  app.get('/vendor/hls.min.js', (_req, res) => res.sendFile(path.resolve(here, '../node_modules/hls.js/dist/hls.min.js')));
-  app.get('/vendor/dash.all.min.js', (_req, res) => res.sendFile(path.resolve(here, '../node_modules/dashjs/dist/modern/umd/dash.all.min.js')));
+  app.use(publicAssets(path.resolve(here, '..')));
   app.use(express.static(path.resolve(here, '../public'), { etag: false }));
   app.get('/room/:id', (_req, res) => res.sendFile(path.resolve(here, '../public/index.html')));
   app.get('/room/:id/manage', (_req, res) => res.sendFile(path.resolve(here, '../public/manage.html')));
