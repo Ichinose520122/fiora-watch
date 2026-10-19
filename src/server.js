@@ -291,10 +291,11 @@ export function createApp(config, dependencies = {}) {
       return res.sendFile(file, { dotfiles: 'deny', cacheControl: false }, error => { if (error && !res.headersSent) res.sendStatus(error.status === 416 ? 416 : 404); });
     } catch { return res.sendStatus(404); }
   });
-  app.use(publicAssets(path.resolve(here, '..')));
+  const assets = publicAssets(path.resolve(here, '..'));
+  app.use(assets);
+  app.get(['/', '/index.html', '/room/:id'], (_req, res) => res.type('html').send(assets.html('index.html')));
+  app.get(['/manage.html', '/room/:id/manage'], (_req, res) => res.type('html').send(assets.html('manage.html')));
   app.use(express.static(path.resolve(here, '../public'), { etag: false }));
-  app.get('/room/:id', (_req, res) => res.sendFile(path.resolve(here, '../public/index.html')));
-  app.get('/room/:id/manage', (_req, res) => res.sendFile(path.resolve(here, '../public/manage.html')));
   app.use((error, _req, res, _next) => { if (!res.headersSent) res.status([401, 403, 409, 503].includes(error.status) ? error.status : 400).json({ error: String(error.message || '请求失败').slice(0, 240) }); });
   const timer = setInterval(() => {
     const now = Date.now();

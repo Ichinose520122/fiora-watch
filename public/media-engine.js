@@ -3,11 +3,11 @@ const pending = new Map();
 export function loadMediaEngine(kind, video) {
   // Preserve HLS quality selection where MediaSource is available.
   if (kind === 'hls' && !window.MediaSource && !window.ManagedMediaSource && video.canPlayType('application/vnd.apple.mpegurl')) return Promise.resolve();
-  const item = { dash: ['dashjs', '/vendor/dash.all.min.js'], hls: ['Hls', '/vendor/hls.min.js'] }[kind];
+  const item = { dash: ['dashjs', './vendor/dash.all.min.js'], hls: ['Hls', './vendor/hls.min.js'] }[kind];
   if (!item || window[item[0]]) return Promise.resolve();
   if (!pending.has(kind)) {
     const promise = new Promise((resolve, reject) => {
-      const script = document.createElement('script'); script.src = item[1];
+      const script = document.createElement('script'); script.src = new URL(item[1], import.meta.url).href;
       const timer = setTimeout(() => finish(new Error('播放组件加载超时，请重试')), 15000);
       function finish(error) {
         clearTimeout(timer); script.onload = null; script.onerror = null;

@@ -93,7 +93,7 @@ Fiora 的 Compose 自动传入 `WatchIssuer=https://${FIORA_DOMAIN}`。非 Compo
 
 Atom 运行脚本及来源、兼容修改说明位于 `public/vendor/atom/`，未加载 Girigiri 的初始化和统计脚本。该快照的公开再分发许可尚待确认。Atom 动态生成样式需要允许内联 CSS；脚本策略仍只允许本站脚本，不开启内联 JavaScript 或 eval。
 
-公开 JS / CSS 支持 Brotli / gzip 压缩和 ETag 缓存校验；更新后重新校验文件，未变化时不重复传输正文。HLS / DASH 播放组件按片源需要加载；支持 MediaSource 的浏览器保留 HLS 清晰度切换，其他兼容浏览器使用原生 HLS。HTML、接口、字幕与视频继续使用各自现有的鉴权及缓存规则。
+播放器脚本、样式及本站公开图片 / 字体使用内容版本地址，浏览器可缓存一年，未变化时直接使用本地缓存；资源内容更新会自动更换地址，无需手动清除缓存。JS / CSS / SVG 同时支持 Brotli / gzip 压缩；未带版本号的旧地址保留 ETag 校验。HLS / DASH 播放组件按片源需要加载并共享同一资源版本；支持 MediaSource 的浏览器保留 HLS 清晰度切换，其他兼容浏览器使用原生 HLS。HTML、接口、字幕与视频继续使用各自现有的鉴权及缓存规则；第三方封面按图片来源返回的缓存规则处理。
 
 ## 模式与文件
 
