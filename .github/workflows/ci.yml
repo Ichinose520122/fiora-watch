@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 24.22.1
       - run: npm install --global pnpm@11.25.0
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
@@ -25,7 +25,10 @@ jobs:
       - run: docker compose --env-file .env.example -f compose.yaml -f compose.build.yaml config --quiet
         env:
           WATCH_SHARED_SECRET: ci-only-not-a-production-secret-0123456789
-      - run: docker build -t fiora-watch:test .
+      - run: docker build --pull -t fiora-watch:test .
+      - name: Verify container Node.js version
+        run: |
+          docker run --rm fiora-watch:test node -e "if (process.version !== 'v24.22.1') throw new Error(process.version); console.log(process.version)"
       - name: Container health check
         run: |
           docker run -d --name watch-test -p 9300:9300 -e WATCH_SHARED_SECRET=ci-only-not-a-production-secret-0123456789 fiora-watch:test
@@ -56,6 +59,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
+          pull: true
           push: true
           tags: |
             ghcr.io/ichinose520122/fiora-watch:latest
@@ -72,6 +76,7 @@ jobs:
         run: |
           mkdir -p library
           docker compose --env-file .env.example pull
+          docker compose --env-file .env.example run --rm --no-deps watch node -e "if (process.version !== 'v24.22.1') throw new Error(process.version); console.log(process.version)"
           docker compose --env-file .env.example up -d --wait --wait-timeout 90
           curl --fail http://127.0.0.1:9300/health
       - name: Show deployment logs

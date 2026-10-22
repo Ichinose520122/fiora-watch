@@ -1,4 +1,4 @@
-FROM node:24-alpine
+FROM node:24.22.1-alpine
 LABEL org.opencontainers.image.source="https://github.com/Ichinose520122/fiora-watch"
 LABEL org.opencontainers.image.description="Independent watch-together cinema for Fiora"
 WORKDIR /app
