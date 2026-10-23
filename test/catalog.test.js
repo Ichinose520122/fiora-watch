@@ -6,8 +6,8 @@ import { resolveMedia } from '../src/resolver.js';
 
 test('catalog search and episode lists retain covers and subtitle groups without unrelated links', async () => {
   const search = await searchCatalog('番名', 1, ['ani.girigirilove.com'], async url => {
-    assert.equal(new URL(url).searchParams.get('wd'), '番名');
-    return { text: JSON.stringify({ code: 1, list: [{ id: 12, name: '番名', pic: '/upload/cover.webp' }, { id: 'bad', name: 'invalid' }] }) };
+    assert.equal(new URL(url).searchParams.get('vod_name'), '番名');
+    return { text: JSON.stringify({ code: 1, info: { total: 1, rows: [{ vod_id: 12, vod_name: '番名', vod_pic: '/upload/cover.webp' }, { vod_id: 'bad', vod_name: 'invalid' }] } }) };
   });
   assert.equal(search.items.length, 1);
   assert.equal(search.items[0].cover, 'https://ani.girigirilove.com/upload/cover.webp');

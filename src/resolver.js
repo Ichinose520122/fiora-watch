@@ -1,6 +1,7 @@
 import { allowedUrl, fetchText } from './network.js';
 import { isCatalogUrl, listEpisodes } from './catalog.js';
 import { isBilibiliUrl, resolveBilibili } from './bilibili.js';
+import { catalogIdentity, resolveGirigiri } from './girigiri.js';
 
 export function parseMacCMS(html, pageUrl) {
   // Only JSON data is read. Never evaluate the source site's JavaScript.
@@ -17,6 +18,17 @@ export function parseMacCMS(html, pageUrl) {
 export async function resolveMedia(input, hosts, read = fetchText) {
   if (typeof input !== 'string' || input.length > 4096) throw new Error('视频地址格式错误');
   if (isBilibiliUrl(input.trim())) return resolveBilibili(input.trim(), hosts, read);
+  const identity = catalogIdentity(input.trim());
+  if (identity?.modern) return resolveGirigiri(input.trim(), hosts, read);
+  try { return await resolvePageMedia(input, hosts, read); }
+  catch (error) {
+    // Saved MacCMS URLs remain usable after the site replaces their HTML with the SPA.
+    if (identity) return resolveGirigiri(input.trim(), hosts, read);
+    throw error;
+  }
+}
+
+async function resolvePageMedia(input, hosts, read) {
   const source = allowedUrl(input.trim(), hosts).href;
   let url = source;
   let catalog;
@@ -26,6 +38,7 @@ export async function resolveMedia(input, hosts, read = fetchText) {
     if (isCatalogUrl(page.url)) {
       const initialPage = page;
       catalog = await listEpisodes(page.url, hosts, (url, allowedHosts) => url === initialPage.url ? Promise.resolve(initialPage) : read(url, allowedHosts));
+      if (catalogIdentity(catalog.source)?.modern) return resolveGirigiri(source, hosts, read);
       if (/^\/GV\d+\/?$/.test(new URL(page.url).pathname)) {
         page = await read(catalog.episodes[0].url, hosts);
       }

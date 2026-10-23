@@ -1,10 +1,12 @@
 import { load } from 'cheerio';
 import { allowedUrl, fetchText } from './network.js';
+import { catalogIdentity, loadGirigiri, searchGirigiri } from './girigiri.js';
+export { catalogIdentity, canonicalCatalogUrl } from './girigiri.js';
 
 const origin = 'https://ani.girigirilove.com';
 const clean = value => String(value || '').replace(/\s+/g, ' ').trim().slice(0, 180);
 export function isCatalogUrl(value) {
-  try { const url = new URL(value); return url.origin === origin && /^\/(?:GV\d+|playGV\d+-\d+-\d+)\/?$/.test(url.pathname); }
+  try { return !!catalogIdentity(value); }
   catch { return false; }
 }
 
@@ -12,24 +14,11 @@ export async function searchCatalog(query, page = 1, hosts, read = fetchText) {
   if (typeof query !== 'string' || !query.trim() || query.length > 80) throw new Error('请输入 1–80 字的番名');
   page = Number(page);
   if (!Number.isInteger(page) || page < 1 || page > 20) throw new Error('搜索页码无效');
-  const url = new URL('/index.php/ajax/suggest', origin);
-  url.search = new URLSearchParams({ mid: '1', wd: query.trim(), limit: '30', page: String(page) });
-  const result = await read(url.href, hosts);
-  let data;
-  try { data = JSON.parse(result.text); } catch { throw new Error('搜索来源暂时不可用，请稍后重试或粘贴播放页地址'); }
-  if (Number(data.code) !== 1 || !Array.isArray(data.list)) throw new Error('搜索来源暂时不可用，请稍后重试');
-  const seen = new Set();
-  const items = data.list.slice(0, 60).filter(item => /^\d{1,12}$/.test(String(item.id)) && !seen.has(String(item.id)) && seen.add(String(item.id))).map(item => {
-    let cover = '';
-    try { const image = new URL(item.pic, origin); if (image.origin === origin && image.pathname.startsWith('/upload/')) cover = image.href; } catch { /* A poster is optional. */ }
-    return { title: clean(item.name), url: `${origin}/GV${item.id}/`, cover, description: clean(item.remarks || '') };
-  });
-  const actualPage = Number(data.page) || page;
-  return { items, page: actualPage, hasMore: actualPage === page && Number(data.pagecount) > page };
+  return searchGirigiri(query, page, hosts, read);
 }
 
 export function parseEpisodes(html, pageUrl) {
-  if (!isCatalogUrl(pageUrl)) throw new Error('暂不支持此地址的分集列表');
+  if (!isCatalogUrl(pageUrl) || catalogIdentity(pageUrl).modern) throw new Error('暂不支持此地址的 HTML 分集列表');
   const $ = load(html);
   const current = new URL(pageUrl);
   const showId = /(?:play)?GV(\d+)/.exec(current.pathname)[1];
@@ -62,6 +51,12 @@ export function parseEpisodes(html, pageUrl) {
 
 export async function listEpisodes(input, hosts, read = fetchText) {
   if (typeof input !== 'string' || input.length > 4096 || !isCatalogUrl(input)) throw new Error('请使用 Girigirilove 番剧或播放页地址');
+  if (catalogIdentity(input).modern) return (await loadGirigiri(input, hosts, read)).catalog;
+  try { return await listLegacyEpisodes(input, hosts, read); }
+  catch { return (await loadGirigiri(input, hosts, read)).catalog; }
+}
+
+async function listLegacyEpisodes(input, hosts, read) {
   const source = allowedUrl(input, hosts);
   const showId = /(?:play)?GV(\d+)/.exec(source.pathname)[1];
   const detailUrl = `${origin}/GV${showId}/`;

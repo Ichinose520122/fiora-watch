@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { requestPublic, fetchText, allowedUrl } from './network.js';
 import { resolveMedia, parsePlaylist } from './resolver.js';
 import { isBilibiliUrl } from './bilibili.js';
+import { catalogIdentity, canonicalCatalogUrl } from './catalog.js';
 
 export function safeFile(root, relative) {
   const base = fs.realpathSync(root);
@@ -66,16 +67,18 @@ export class MediaLibrary {
       if (typeof source !== 'string' || !source.trim() || source.length > 4096) throw new Error('视频地址格式错误');
       if (isBilibiliUrl(source.trim())) throw new Error('B站视频请使用在线模式，暂不支持提前下载');
       const url = allowedUrl(source.trim(), this.config.hosts); url.hash = '';
-      if (url.hostname === 'ani.girigirilove.com' && /^\/playGV\d+-\d+-\d+\/?$/.test(url.pathname)) { url.pathname = url.pathname.replace(/\/?$/, '/'); url.search = ''; }
-      return url.href;
+      return catalogIdentity(url.href) ? canonicalCatalogUrl(url.href) : url.href;
     });
     const unique = [...new Set(normalized)]; const jobs = []; const additions = [];
     for (const source of unique) {
       const existing = this.store.data.jobs.find(job => job.source === source && (['queued', 'running'].includes(job.status) || reuseCompleted && job.status === 'done'));
       if (existing) { jobs.push(existing); continue; }
-      const episode = /\/playGV\d+-(\d+)-(\d+)\//.exec(new URL(source).pathname);
-      const job = { id: randomUUID(), source, by: actor, title: episode ? `第 ${episode[2]} 集 · 等待解析` : '等待解析',
-        ...(episode ? { group: `线路 ${episode[1]}`, episodeNumber: Number(episode[2]) } : {}),
+      const identity = catalogIdentity(source);
+      const episode = identity?.play
+        ? { group: `线路 ${identity.sourceIndex + 1}`, episodeNumber: identity.episodeIndex + 1 }
+        : null;
+      const job = { id: randomUUID(), source, by: actor, title: episode ? `第 ${episode.episodeNumber} 集 · ${episode.group} · 等待解析` : '等待解析',
+        ...(episode || {}),
         status: 'queued', stage: 'queued', bytes: 0, completed: 0, total: 0, progress: 0, speedBytesPerSecond: 0, createdAt: Date.now(), updatedAt: Date.now() };
       additions.push(job); jobs.push(job);
     }

@@ -47,6 +47,66 @@ test('batch limits preserve every preexisting history record and reject entire o
   assert.equal(library.store.data.jobs.length, 200); assert.ok(job.finishedAt);
 });
 
+test('modern Girigiri downloads retain both indexes while normalizing unrelated query and fragments', t => {
+  const library = setup(t); library.running = true;
+  const result = library.enqueueBatch([
+    'https://ani.girigirilove.com/play/27217?sourceIndex=0&episodeIndex=2',
+    'https://ani.girigirilove.com/play/27217/?tracking=one&episodeIndex=2&sourceIndex=0#player',
+    'https://ani.girigirilove.com/play/27217?sourceIndex=0&episodeIndex=3',
+    'https://ani.girigirilove.com/play/27217?sourceIndex=1&episodeIndex=2',
+  ], 'admin');
+  assert.equal(result.added, 3); assert.equal(result.skipped, 1);
+  assert.equal(new Set(result.jobs.map(job => job.id)).size, 3);
+  const episode = result.jobs[0];
+  assert.equal(episode.source, 'https://ani.girigirilove.com/play/27217?sourceIndex=0&episodeIndex=2');
+  assert.equal(episode.episodeNumber, 3); assert.equal(episode.group, '线路 1');
+  assert.equal(episode.title, '第 3 集 · 线路 1 · 等待解析');
+  assert.equal(result.jobs[1].episodeNumber, 4);
+  assert.equal(result.jobs[2].group, '线路 2');
+  assert.equal(library.enqueueBatch(['https://ani.girigirilove.com/play/27217?episodeIndex=2&sourceIndex=0&x=2'], 'admin').added, 0);
+});
+
+test('modern Girigiri missing indexes default to zero and maximum indexes remain distinct', t => {
+  const library = setup(t); library.running = true;
+  const result = library.enqueueBatch([
+    'https://ani.girigirilove.com/play/27217',
+    'https://ani.girigirilove.com/play/27217?sourceIndex=0&episodeIndex=0',
+    'https://ani.girigirilove.com/play/27217?episodeIndex=1999',
+    'https://ani.girigirilove.com/play/27217?sourceIndex=1999',
+  ], 'admin');
+  assert.equal(result.added, 3); assert.equal(result.skipped, 1);
+  assert.equal(result.jobs[0].source, 'https://ani.girigirilove.com/play/27217?sourceIndex=0&episodeIndex=0');
+  assert.equal(result.jobs[0].episodeNumber, 1); assert.equal(result.jobs[0].group, '线路 1');
+  assert.equal(result.jobs[1].episodeNumber, 2000); assert.equal(result.jobs[2].group, '线路 2000');
+});
+
+test('modern Girigiri invalid indexes reject the entire batch before saving or running downloads', t => {
+  const library = setup(t); let saves = 0; let runs = 0;
+  library.store.save = () => { saves++; }; library.run = () => { runs++; };
+  for (const key of ['sourceIndex', 'episodeIndex']) {
+    for (const value of ['-1', '0.5', '2000', '999999999999999999999', 'NaN', 'Infinity']) {
+      assert.throws(() => library.enqueueBatch([
+        'https://cdn.example.com/valid.mp4',
+        `https://ani.girigirilove.com/play/27217?${key}=${value}`,
+      ], 'admin'), undefined, `${key}=${value}`);
+      assert.equal(library.store.data.jobs.length, 0);
+    }
+  }
+  assert.equal(saves, 0); assert.equal(runs, 0);
+});
+
+test('modern Girigiri downloads continue to enforce configured hosts and credential restrictions', t => {
+  const library = setup(t); library.running = true;
+  for (const source of [
+    'https://ani.girigirilove.com.attacker.example/play/27217?episodeIndex=2',
+    'https://user:password@ani.girigirilove.com/play/27217?episodeIndex=2',
+    'https://ani.girigirilove.com:8443/play/27217?episodeIndex=2',
+  ]) assert.throws(() => library.enqueue(source, 'admin'), /域名未允许/);
+  library.config.hosts = ['cdn.example.com'];
+  assert.throws(() => library.enqueue('https://ani.girigirilove.com/play/27217?episodeIndex=2', 'admin'), /域名未允许/);
+  assert.equal(library.store.data.jobs.length, 0);
+});
+
 test('MP4 progress includes expected bytes and transfer speed during a single long response', async t => {
   let release; const gate = new Promise(resolve => { release = resolve; });
   const library = setup(t, { request: async () => {

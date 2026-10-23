@@ -172,7 +172,7 @@ async function downloads() {
 $('refresh-library').onclick = () => attempt(library);
 $('download-form').onsubmit = event => { event.preventDefault(); attempt(async () => {
   const source = $('download-source').value.trim(); const url = new URL(source);
-  if (url.origin === 'https://ani.girigirilove.com' && /^\/(?:GV\d+|playGV\d+-\d+-\d+)\/?$/.test(url.pathname)) {
+  if (url.origin === 'https://ani.girigirilove.com' && /^\/(?:GV\d+|playGV\d+-\d+-\d+|detail\/\d+|play\/\d+)\/?$/.test(url.pathname)) {
     document.querySelector('[data-tab="online"]').click(); await inspect(source); notice('已读取完整剧集，请选择线路并勾选要下载的集数。');
   } else await download(source);
 }); };
