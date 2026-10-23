@@ -14,7 +14,7 @@ export function mountAtomPlayer({ requestControl, document: doc = document }) {
     screen.prepend(mount);
     atom = new window.aplayer({
       id: 'FioraWatch', container: '#atom-mount', lang: 'zh-CN', dark: true,
-      color: '#00a1d6', video: { url: '', type: 'watch', key: '', volume: 1, moreAttr: { playsinline: '', preload: 'auto' } },
+      color: '#62d6ad', video: { url: '', type: 'watch', key: '', volume: 1, moreAttr: { playsinline: '', preload: 'auto' } },
       control: { button: { volume: true, fullScreen: true, back: false } },
       watchControl: requestControl,
       watchFullscreen: () => fullscreenRequest?.(), watchIsFullscreen: isFullscreen,

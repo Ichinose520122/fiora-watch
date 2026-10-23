@@ -138,3 +138,86 @@ test('cancelling during resolution retains history and prevents transfer from st
   assert.equal(job.status, 'cancelled'); assert.equal(requests, 0); assert.match(job.error, /取消/);
   assert.equal(library.store.data.jobs.length, 1);
 });
+
+test('transfer speed follows a rolling window and falls to zero when a transfer stalls', t => {
+  let now = 1000; const library = setup(t, { now: () => now });
+  const job = { status: 'running', stage: 'downloading', transferStartedAt: 1000, bytes: 0, kind: 'mp4', expectedBytes: 5000 };
+  library.store.data.jobs.push(job); library.update(job);
+  now = 2000; job.bytes = 100; library.update(job);
+  assert.equal(job.speedBytesPerSecond, 100);
+  now = 7000; assert.equal(library.jobs()[0].speedBytesPerSecond, 0);
+  now = 8000; job.bytes = 3100; library.update(job);
+  // This excludes the first second's bytes instead of using the full lifetime average.
+  assert.equal(job.speedBytesPerSecond, 600);
+  now = 14000; assert.equal(library.jobs()[0].speedBytesPerSecond, 0);
+  job.stage = 'finalizing'; assert.equal(library.transferSpeed(job), 0);
+});
+
+function completed(library, id, extra = {}) {
+  const job = { id, status: 'done', title: '番剧', kind: 'mp4', ...extra };
+  library.store.data.jobs.push(job); const directory = path.join(library.root, id); fs.mkdirSync(directory);
+  fs.writeFileSync(path.join(directory, 'video.mp4'), 'video'); return job;
+}
+const episodeIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+
+test('library lists read-only mounts and episode metadata, and batch removes selected episodes only', t => {
+  const library = setup(t); const [one, two] = episodeIds;
+  completed(library, one, { seriesTitle: '同一番剧', group: '线路1', episodeNumber: 1, episodeTitle: '第一集' });
+  completed(library, two, { seriesTitle: '同一番剧', episodeNumber: 2 });
+  fs.writeFileSync(path.join(library.config.libraryDir, 'mounted.mp4'), 'keep');
+  const items = library.list(); assert.equal(items[0].readOnly, true); assert.equal(items[0].removable, false);
+  assert.equal(items[1].seriesTitle, '同一番剧'); assert.equal(items[1].episodeTitle, '第一集'); assert.equal(items[1].removable, true);
+  const result = library.removeBatch([`download:${one}`, `download:${one}`]); assert.equal(result.removed, 1);
+  assert.equal(fs.existsSync(path.join(library.root, one)), false); assert.equal(fs.existsSync(path.join(library.root, two)), true);
+  assert.equal(fs.readFileSync(path.join(library.config.libraryDir, 'mounted.mp4'), 'utf8'), 'keep');
+  assert.deepEqual(library.store.data.jobs.map(job => job.id), [two]);
+});
+
+test('batch removal rejects every selection before mutation when a mount, active room, or invalid item is included', t => {
+  const library = setup(t); const [one, two] = episodeIds; completed(library, one); completed(library, two);
+  for (const invalid of ['local:mounted.mp4', 'download:../../outside', 'download:33333333-3333-4333-8333-333333333333', null]) {
+    assert.throws(() => library.removeBatch([`download:${one}`, invalid]));
+    assert.equal(library.store.data.jobs.length, 2); assert.ok(fs.existsSync(path.join(library.root, one)));
+  }
+  library.store.data.rooms.otherRoom = { media: { id: `download:${two}` }, paused: true };
+  assert.equal(library.list().find(item => item.id === `download:${two}`).removable, false);
+  assert.throws(() => library.removeBatch([`download:${one}`, `download:${two}`]), /房间使用/);
+  assert.equal(library.store.data.jobs.length, 2); assert.ok(fs.existsSync(path.join(library.root, one)));
+});
+
+test('failed batch commit restores detached files and download records', t => {
+  const library = setup(t); for (const id of episodeIds) completed(library, id);
+  library.store.save = () => { throw new Error('disk unavailable'); };
+  assert.throws(() => library.removeBatch(episodeIds.map(id => `download:${id}`)), /disk unavailable/);
+  assert.equal(library.store.data.jobs.length, 2);
+  for (const id of episodeIds) assert.equal(fs.readFileSync(path.join(library.root, id, 'video.mp4'), 'utf8'), 'video');
+});
+
+test('restart restores an interrupted deletion before state commit, including a partly staged batch', t => {
+  const library = setup(t); for (const id of episodeIds) completed(library, id);
+  library.store.save();
+  // Simulate process exit after the first rename, before the second rename or save.
+  fs.renameSync(path.join(library.root, episodeIds[0]), path.join(library.trash, episodeIds[0]));
+  const store = new Store(library.config.dataDir); const restarted = new MediaLibrary(library.config, store);
+  assert.equal(restarted.list().length, 2); assert.equal(store.data.jobs.length, 2);
+  for (const id of episodeIds) assert.equal(fs.readFileSync(path.join(restarted.root, id, 'video.mp4'), 'utf8'), 'video');
+  assert.deepEqual(fs.readdirSync(restarted.trash), []);
+  // Recovery is idempotent on subsequent restarts.
+  new MediaLibrary(library.config, new Store(library.config.dataDir));
+  for (const id of episodeIds) assert.ok(fs.existsSync(path.join(restarted.root, id, 'video.mp4')));
+});
+
+test('restart finishes committed deletion cleanup without resurrecting removed media', t => {
+  const library = setup(t); for (const id of episodeIds) completed(library, id);
+  library.store.save();
+  for (const id of episodeIds) fs.renameSync(path.join(library.root, id), path.join(library.trash, id));
+  // The persisted state commit happened, but process exit prevented trash cleanup.
+  library.store.data.jobs = []; library.store.save();
+  assert.equal(library.usedBytes(), 10); // Detached files still count against quota.
+  const store = new Store(library.config.dataDir); const restarted = new MediaLibrary(library.config, store);
+  assert.equal(restarted.list().length, 0); assert.equal(store.data.jobs.length, 0);
+  assert.deepEqual(fs.readdirSync(restarted.trash), []); assert.equal(restarted.usedBytes(), 0);
+  for (const id of episodeIds) assert.equal(fs.existsSync(path.join(restarted.root, id)), false);
+  new MediaLibrary(library.config, new Store(library.config.dataDir));
+  for (const id of episodeIds) assert.equal(fs.existsSync(path.join(restarted.root, id)), false);
+});

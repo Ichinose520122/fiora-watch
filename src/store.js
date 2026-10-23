@@ -6,6 +6,8 @@ export class Store {
     fs.mkdirSync(directory, { recursive: true });
     this.file = path.join(directory, 'state.json');
     this.data = fs.existsSync(this.file) ? JSON.parse(fs.readFileSync(this.file, 'utf8')) : { rooms: {}, jobs: [], usedTickets: {} };
+    const delivery = (this.data.settings?.delivery ?? this.data.settings?.bilibiliDelivery) === 'proxy' ? 'proxy' : 'direct';
+    this.data.settings = { ...this.data.settings, delivery, bilibiliDelivery: delivery };
     // Reconnecting after a restart never unexpectedly starts playback.
     for (const room of Object.values(this.data.rooms)) { room.paused = true; room.updatedAt = Date.now(); }
     for (const job of this.data.jobs) {

@@ -34,7 +34,7 @@ async function api(url, body) {
 function attempt(task) { return Promise.resolve().then(task).catch(error => notice(error.message, true)); }
 function target() { return state ? state.position + (state.paused ? 0 : Math.max(0, (state.serverTime - state.updatedAt) / 1000 + (performance.now() - receivedAt) / 1000)) : 0; }
 function playbackStatus() {
-  const mode = activeDelivery === 'direct' ? '用户端直连' : activeDelivery === 'proxy' ? '服务器中转' : '';
+  const mode = activeDelivery === 'direct' ? '直连' : activeDelivery === 'proxy' ? '服务器中继' : '';
   $('playback-status').textContent = [!state?.media ? '等待选择影片' : state.canControl ? '与你同步' : '跟随房间播放', mode].filter(Boolean).join(' · ');
   $('delivery-status').textContent = mode; $('delivery-status').hidden = !mode;
 }
@@ -77,7 +77,7 @@ function loadMedia(source, { preserve = false } = {}) {
     if (generation !== sourceGeneration || source !== activeSource) return;
     const fallback = state?.media?.fallbackUrl;
     if (!fallbackUsed && state?.media?.playbackMode === 'direct' && fallback && fallback !== source && new URL(fallback, location.origin).origin === location.origin) {
-      fallbackUsed = true; loadMedia(fallback, { preserve: true }); notice('直连受来源限制，已改用服务器加载'); return;
+      fallbackUsed = true; loadMedia(fallback, { preserve: true }); notice('已切换服务器中继'); return;
     }
     player.fail('影片暂时无法加载，请重试或更换片源。'); notice('影片暂时无法加载，请重试或更换片源。', true);
   };
@@ -108,7 +108,7 @@ function receive(next) {
   if (!next.canControl || !next.media) queuedPlayback = undefined;
   $('identity').textContent = next.user.name; $('logout').hidden = false;
   $('connection').textContent = next.paused ? '已暂停' : '同步播放中';
-  $('title').textContent = next.media?.title || '今晚看什么？';
+  $('title').textContent = next.media?.title || '等待开场';
   playbackStatus();
   $('back-to-fiora').href = next.fioraUrl;
   $('toggle').textContent = next.paused ? '▶' : 'Ⅱ'; $('toggle').setAttribute('aria-label', next.paused ? '播放' : '暂停');
@@ -243,7 +243,7 @@ function renderMessages(messages) {
   const signature = JSON.stringify(messages); if (signature === lastMessages && !scrollAfterSend) return;
   const list = $('messages'); const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 64;
   const oldScroll = list.scrollTop; lastMessages = signature; list.replaceChildren();
-  if (!messages.length) { const empty = document.createElement('div'); empty.className = 'chat-empty'; empty.textContent = '这一刻，想说些什么？'; list.append(empty); }
+  if (!messages.length) { const empty = document.createElement('div'); empty.className = 'chat-empty'; empty.textContent = '聊聊正在看的故事吧'; list.append(empty); }
   for (const message of messages) {
     const row = document.createElement('div'); row.className = `chat-message${message.user.id === state.user.id ? ' self' : ''}${message.deleted ? ' deleted' : ''}`;
     const avatar = document.createElement('div'); avatar.className = 'avatar'; avatar.textContent = Array.from(message.user.name)[0] || '·';
@@ -298,7 +298,7 @@ attempt(async () => {
   const seed = sessionStorage.getItem(`watch-source:${room}`);
   const management = `/room/${room}/manage${seed ? '#source=' + encodeURIComponent(seed) : ''}`; $('manage').href = management; $('choose-source').href = management;
   receive(await api('/api/state')); void refreshChat();
-  if (!atomShell.active) notice('Atom 播放器未能加载，暂用基础播放器；刷新页面可重试。', true);
+  if (!atomShell.active) notice('已使用基础播放器，刷新可重试。', true);
   events = new EventSource(`/api/events?room=${encodeURIComponent(room)}`);
   events.onopen = () => { $('connection').textContent = '正在同步'; };
   events.onmessage = event => { const next = JSON.parse(event.data); enabled = !autoplayBlocked; receive(next); };

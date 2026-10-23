@@ -14,6 +14,8 @@ import { BilibiliAccount } from './bilibili-account.js';
 import QRCode from 'qrcode';
 import { pipeline } from 'node:stream/promises';
 import { publicAssets } from './assets.js';
+import { MediaRelay } from './relay.js';
+import { registerLibraryRoutes } from './library-api.js';
 
 export const SESSION_MS = 180 * 60000;
 
@@ -34,7 +36,12 @@ export function createApp(config, dependencies = {}) {
   const listSubtitles = dependencies.listSubtitles || (media => listBilibiliSubtitles({ ...media.bilibili, source: media.source }, readBilibili));
   const fetchSubtitle = dependencies.fetchSubtitle || fetchBilibiliSubtitle;
   let subtitleCache = new WeakMap();
-  const playbackSettings = () => ({ bilibiliDelivery: store.data.settings?.bilibiliDelivery === 'proxy' ? 'proxy' : 'direct' });
+  const relay = new MediaRelay(config.hosts, dependencies.requestMedia);
+  const relayStreams = new Set();
+  const playbackSettings = () => {
+    const delivery = (store.data.settings?.delivery ?? store.data.settings?.bilibiliDelivery) === 'proxy' ? 'proxy' : 'direct';
+    return { delivery, bilibiliDelivery: delivery };
+  };
   const refreshing = new Map();
   const invitationUpdates = new Map();
   app.disable('x-powered-by');
@@ -80,8 +87,9 @@ export function createApp(config, dependencies = {}) {
   const admin = (req, res, next) => req.session.user.admin ? next() : res.status(403).json({ error: '只有站点管理员可以使用此功能' });
   app.get('/api/settings/playback', admin, (_req, res) => res.json(playbackSettings()));
   app.post('/api/settings/playback', admin, (req, res) => {
-    if (!['proxy', 'direct'].includes(req.body?.bilibiliDelivery)) throw new Error('请选择服务器加载或用户端直连');
-    store.data.settings = { ...store.data.settings, bilibiliDelivery: req.body.bilibiliDelivery };
+    const delivery = req.body?.delivery ?? req.body?.bilibiliDelivery;
+    if (!['proxy', 'direct'].includes(delivery)) throw new Error('请选择直连或服务器中继');
+    store.data.settings = { ...store.data.settings, delivery, bilibiliDelivery: delivery };
     store.save(); res.json(playbackSettings());
   });
   app.get('/api/bilibili/account', admin, async (_req, res) => res.json(await account.publicStatus()));
@@ -122,6 +130,10 @@ export function createApp(config, dependencies = {}) {
       if (media.playbackMode === 'direct') media.fallbackUrl = base + '&delivery=proxy';
       const labels = { 6: '240P', 16: '360P', 32: '480P', 64: '720P', 74: '720P 60帧', 80: '1080P', 112: '1080P 高码率', 116: '1080P 60帧', 120: '4K', 125: 'HDR', 126: '杜比视界', 127: '8K' };
       media.qualities = bilibili.tracks.filter(track => track.type === 'video').map(track => ({ id: track.id, representationId: track.id, label: labels[track.quality] || `${Math.min(track.width, track.height)}P`, width: track.width, height: track.height, frameRate: track.frameRate }));
+    } else if (['hls', 'mp4'].includes(media.kind) && /^https?:\/\//i.test(media.url)) {
+      media.playbackMode = media.playbackMode === 'proxy' ? 'proxy' : 'direct';
+      if (media.playbackMode === 'proxy') { if (media.source === media.url) delete media.source; media.url = relay.path(room); }
+      else media.fallbackUrl = relay.path(room);
     }
     return media;
   };
@@ -137,6 +149,42 @@ export function createApp(config, dependencies = {}) {
   app.get('/api/catalog/episodes', roomAccess, async (req, res) => {
     throttle(`catalog:${req.session.user.id}`, 30);
     res.json(isBilibiliUrl(req.query.url) ? await listBilibiliEpisodes(req.query.url, config.hosts, readBilibili) : await catalog.episodes(req.query.url));
+  });
+  app.get('/api/media/relay', roomAccess, async (req, res, next) => {
+    const media = req.room.media;
+    if (!media || media.bilibili || !['hls', 'mp4'].includes(media.kind) || !/^https?:\/\//i.test(media.url) ||
+        String(req.room.mediaVersion) !== req.query.version || typeof req.query.resource !== 'string' ||
+        (req.query.resource !== 'root' && !relay.validToken(req.query.resource))) return res.sendStatus(404);
+    const resource = relay.resource(req.room, req.query.resource);
+    if (!resource) return res.sendStatus(404);
+    if (relayStreams.size >= 256 || [...relayStreams].filter(active => active.room === req.room.id).length >= 24) return res.status(503).json({ error: '中继请求过多，请稍后重试' });
+    const controller = new AbortController();
+    const selection = { id: req.room.id, mediaVersion: req.room.mediaVersion, media };
+    const active = { room: req.room.id, session: req.session, grant: req.grant, controller }; relayStreams.add(active);
+    const expiry = setTimeout(() => controller.abort(), Math.max(1, req.grant.expires - Date.now()));
+    const abort = () => controller.abort(); res.on('close', abort);
+    try {
+      const upstream = await relay.open(resource, req.headers.range, controller.signal);
+      const response = upstream.response;
+      if (req.room.media !== media || req.grant.expires <= Date.now()) { response.destroy(); return res.sendStatus(409); }
+      res.set({ 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store, no-transform' });
+      if (response.statusCode === 416) {
+        res.status(416).set('Content-Length', '0');
+        if (response.headers['content-range']) res.set('Content-Range', response.headers['content-range']);
+        response.destroy(); return res.end();
+      }
+      if (relay.isManifest(resource, upstream)) {
+        const manifest = await relay.manifest(selection, upstream, controller.signal);
+        if (req.room.media !== media || req.grant.expires <= Date.now()) return res.sendStatus(409);
+        return res.type('application/vnd.apple.mpegurl').send(manifest);
+      }
+      const contentType = String(response.headers['content-type'] || '');
+      res.status(response.statusCode).type(/^(?:video\/|audio\/|application\/(?:octet-stream|mp4)(?:;|$))/i.test(contentType) ? contentType : media.kind === 'mp4' ? 'video/mp4' : 'application/octet-stream');
+      for (const name of ['content-length', 'content-range', 'accept-ranges', 'content-encoding']) if (response.headers[name]) res.set(name, response.headers[name]);
+      if (req.method === 'HEAD') { response.destroy(); return res.end(); }
+      await pipeline(response, res);
+    } catch (error) { if (!res.headersSent && !res.destroyed) next(error); else res.destroy(); }
+    finally { relayStreams.delete(active); clearTimeout(expiry); res.off('close', abort); controller.abort(); }
   });
   const bilibiliAccess = (req, res, next) => {
     if (!req.room.media?.bilibili || String(req.room.mediaVersion) !== req.query.version) return res.status(404).json({ error: '影片已切换，请刷新播放页' });
@@ -252,7 +300,8 @@ export function createApp(config, dependencies = {}) {
       if (!media) throw new Error('本地视频不存在');
     } else if (req.body.mode !== 'clear') throw new Error('播放模式无效');
     if (req.grant.expires <= Date.now() || revision !== req.room.revision) throw new Error('房间状态已改变，请刷新后重新选择');
-    if (media?.bilibili) media.playbackMode = playbackSettings().bilibiliDelivery;
+    if (media && req.body.mode === 'online') media.playbackMode = playbackSettings().delivery;
+    for (const active of relayStreams) if (active.room === req.room.id) active.controller.abort();
     Object.assign(req.room, { media, mediaVersion: req.room.revision + 1, paused: !media, position: 0, updatedAt: Date.now(), revision: req.room.revision + 1 });
     store.save(); publish(req.room);
     // Serialize cover/title changes so a slow earlier choice cannot overwrite a newer card.
@@ -269,14 +318,15 @@ export function createApp(config, dependencies = {}) {
     finally { if (invitationUpdates.get(req.room.id) === update) invitationUpdates.delete(req.room.id); }
     res.json({ ok: true, ...(warning ? { warning } : {}) });
   });
-  app.get('/api/library', (_req, res) => res.json({ items: library.list() }));
-  app.get('/api/downloads', admin, (_req, res) => res.json({ jobs: store.data.jobs, usedBytes: library.usedBytes(), quota: config.cacheBytes }));
+  registerLibraryRoutes(app, { library, requireAdmin: admin });
+  app.get('/api/downloads', admin, (_req, res) => res.json({ jobs: library.jobs?.() || store.data.jobs, usedBytes: library.usedBytes(), quota: config.cacheBytes }));
   app.post('/api/downloads', admin, (req, res) => { throttle(`download:${req.session.user.id}`, 10); res.json(library.enqueue(req.body.url, req.session.user.id)); });
   app.post('/api/downloads/batch', admin, (req, res) => { throttle(`download-batch:${req.session.user.id}`, 6); res.json(library.enqueueBatch(req.body.urls, req.session.user.id)); });
   app.post('/api/downloads/:id/remove', admin, (req, res) => { library.cancel(req.params.id); res.json({ ok: true }); });
   app.post('/api/logout', (req, res) => {
     account.cancel(cookieId(req));
     const session = req.session; sessions.delete(cookieId(req));
+    for (const active of relayStreams) if (active.session === session) active.controller.abort();
     for (const stream of streams) if (stream.session === session) { stream.res.end(); streams.delete(stream); }
     res.clearCookie('watch_session', { path: '/' }); res.json({ ok: true });
   });
@@ -299,6 +349,7 @@ export function createApp(config, dependencies = {}) {
   app.use((error, _req, res, _next) => { if (!res.headersSent) res.status([401, 403, 409, 503].includes(error.status) ? error.status : 400).json({ error: String(error.message || '请求失败').slice(0, 240) }); });
   const timer = setInterval(() => {
     const now = Date.now();
+    for (const active of relayStreams) if (active.grant.expires <= now) active.controller.abort();
     for (const stream of streams) {
       if (stream.grant.expires <= now) { stream.res.end(); streams.delete(stream); }
       else stream.res.write(`data: ${JSON.stringify(snapshot(stream.room, stream.session, stream.grant))}\n\n`);
@@ -307,7 +358,7 @@ export function createApp(config, dependencies = {}) {
     for (const [key, value] of limits) if (value.since < now - 60000) limits.delete(key);
   }, 5000);
   timer.unref();
-  return { app, store, library, close: () => { clearInterval(timer); library.abort?.abort(); for (const stream of streams) stream.res.end(); } };
+  return { app, store, library, close: () => { clearInterval(timer); library.abort?.abort(); for (const stream of streams) stream.res.end(); for (const active of relayStreams) active.controller.abort(); } };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

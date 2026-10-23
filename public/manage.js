@@ -3,6 +3,7 @@ const room = /^\/room\/([a-f0-9]+)\/manage$/.exec(location.pathname)?.[1];
 let state; let activeTab = 'online'; let busy = false; let noticeTimer; let catalog; let selectedIndex = 0;
 let catalogLoading = false; let searchLoading = false; let searchPage = 0; let searchQuery = ''; let downloading = false;
 let selectedDownloads = new Set(); let currentGroup = '';
+let libraryItems = []; const selectedLibrary = new Set(); let libraryBusy = false;
 const bytes = value => { const number = Math.max(0, Number(value) || 0); const unit = number >= 1024 ** 3 ? 'GB' : number >= 1024 ** 2 ? 'MB' : number >= 1024 ? 'KB' : 'B'; return `${(number / ({ GB: 1024 ** 3, MB: 1024 ** 2, KB: 1024, B: 1 })[unit]).toFixed(unit === 'B' ? 0 : 1)} ${unit}`; };
 const episodeGroup = episode => String(episode.groupId ?? episode.group ?? 'default');
 const catalogDownloadable = () => !!catalog?.episodes?.length && !catalog.episodes.some(episode => { try { return /(^|\.)bilibili\.com$|^b23\.tv$/.test(new URL(episode.url).hostname); } catch { return true; } });
@@ -20,13 +21,13 @@ function refreshControls() {
   $('download-episode').hidden = $('download-batch').hidden = $('batch-controls').hidden = !state?.user.admin || !catalogDownloadable();
   $('download-episode').disabled = downloading || catalogLoading || !catalog?.episodes?.[selectedIndex];
   $('download-batch').disabled = downloading || catalogLoading || !selectedDownloads.size || selectedDownloads.size > 100;
-  $('download-batch').textContent = downloading ? '加入队列中…' : `批量下载勾选剧集${selectedDownloads.size ? `（${selectedDownloads.size}）` : ''}`;
+  $('download-batch').textContent = downloading ? '加入队列中…' : `下载已选剧集${selectedDownloads.size ? `（${selectedDownloads.size}）` : ''}`;
   $('select-all-episodes').disabled = $('clear-episodes').disabled = downloading || catalogLoading;
   $('add-download').disabled = downloading || catalogLoading;
   $('batch-count').textContent = `已选 ${selectedDownloads.size} 集 · 每批最多 100 集`;
   document.querySelectorAll('[data-library-play]').forEach(button => { button.disabled = busy || !state?.canControl; });
 }
-async function refreshState() { state = await api('/api/state'); $('identity').textContent = state.user.name; $('download-tab').hidden = $('bilibili-tab').hidden = !state.user.admin; $('current-title').textContent = state.media?.title || '未选择'; refreshControls(); }
+async function refreshState() { state = await api('/api/state'); $('identity').textContent = state.user.name; $('download-tab').hidden = $('bilibili-tab').hidden = !state.user.admin; if ($('settings-tab')) $('settings-tab').hidden = !state.user.admin; $('current-title').textContent = state.media?.title || '未选择'; refreshControls(); }
 async function select(media) {
   if (busy || !state?.canControl) return;
   busy = true; refreshControls();
@@ -41,7 +42,7 @@ $('source-form').onsubmit = event => {
       await select({ mode: 'online', url: $('source').value.trim() });
       sessionStorage.removeItem(`watch-source:${room}`);
       if (state?.media?.episodes?.length) { selectedDownloads.clear(); currentGroup = ''; catalog = { title: state.media.seriesTitle || state.media.title, episodes: state.media.episodes }; selectedIndex = state.media.episodeIndex || 0; renderCatalog(); }
-    } finally { $('load').textContent = '播放此地址'; }
+    } finally { $('load').textContent = '立即播放'; }
   });
 };
 $('clear').onclick = () => attempt(() => select({ mode: 'clear' }));
@@ -111,7 +112,7 @@ function appendSearch(items) {
     } else card.classList.add('no-cover');
     const info = document.createElement('div'); info.className = 'catalog-info';
     const title = document.createElement('strong'); title.textContent = entry.title;
-    const description = document.createElement('small'); description.textContent = `${entry.description || '查看完整剧集'}${state?.user.admin ? ' · 可批量下载' : ''}`; info.append(title, description); card.append(info);
+    const description = document.createElement('small'); description.textContent = entry.description || '查看剧集'; info.append(title, description); card.append(info);
     card.onclick = () => attempt(() => inspect(entry.url)); $('search-results').append(card);
   }
 }
@@ -129,11 +130,80 @@ async function search(append = false) {
 }
 $('search-form').onsubmit = event => { event.preventDefault(); attempt(() => search()); };
 $('more-results').onclick = () => attempt(() => search(true));
-function item(parent, title, detail) { const row = document.createElement('div'); row.className = 'item'; const name = document.createElement('strong'); name.textContent = title; const text = document.createElement('small'); text.textContent = detail; row.append(name, text); parent.append(row); return row; }
 function button(row, text, onClick, disabled = false) { const node = document.createElement('button'); node.textContent = text; node.disabled = disabled; node.onclick = () => attempt(onClick); row.append(node); return node; }
 async function library() {
-  const result = await api('/api/library'); $('library').replaceChildren(); if (!result.items.length) $('library').textContent = '媒体库还没有影片';
-  for (const media of result.items) button(item($('library'), media.title, media.kind === 'hls' ? 'HLS' : '本地视频'), '加载到放映室', () => select({ mode: 'local', id: media.id }), busy || !state?.canControl).dataset.libraryPlay = 'true';
+  const result = await api('/api/library'); libraryItems = result.items;
+  const available = new Set(libraryItems.filter(media => media.removable).map(media => media.id));
+  for (const id of selectedLibrary) if (!available.has(id)) selectedLibrary.delete(id);
+  renderLibrary();
+}
+function filteredLibrary() {
+  const query = ($('library-filter')?.value || '').trim().toLocaleLowerCase();
+  return libraryItems.filter(media => !query || [media.title, media.seriesTitle, media.episodeTitle, media.group].join(' ').toLocaleLowerCase().includes(query));
+}
+function libraryControls() {
+  const admin = !!state?.user.admin;
+  if ($('library-toolbar')) $('library-toolbar').hidden = !admin;
+  if ($('library-selection-count')) $('library-selection-count').textContent = `已选 ${selectedLibrary.size} 项`;
+  if ($('library-remove-selected')) $('library-remove-selected').disabled = !admin || libraryBusy || !selectedLibrary.size;
+  if ($('library-select-all')) $('library-select-all').disabled = !admin || libraryBusy || !filteredLibrary().some(media => media.removable);
+  if ($('library-clear-selection')) $('library-clear-selection').disabled = libraryBusy || !selectedLibrary.size;
+}
+function renderLibrary() {
+  $('library').replaceChildren(); const visible = filteredLibrary();
+  if (!visible.length) $('library').textContent = libraryItems.length ? '没有匹配的媒体' : '媒体库还没有影片';
+  const groups = new Map();
+  for (const media of visible) { const key = media.seriesTitle || '其他媒体'; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(media); }
+  for (const [title, entries] of groups) {
+    const section = document.createElement('section'); section.className = 'library-group';
+    const heading = document.createElement('div'); heading.className = 'library-group-heading';
+    const name = document.createElement('h3'); name.textContent = `${title} · ${entries.length}`; heading.append(name);
+    if (state?.user.admin && entries.some(media => media.removable)) button(heading, '勾选本组', () => { for (const media of entries) if (media.removable) selectedLibrary.add(media.id); renderLibrary(); }, libraryBusy).className = 'quiet library-group-select';
+    section.append(heading);
+    for (const media of entries) {
+      const row = document.createElement('div'); row.className = 'item library-item';
+      if (state?.user.admin) {
+        const choice = document.createElement('input'); choice.type = 'checkbox'; choice.className = 'library-choice'; choice.checked = selectedLibrary.has(media.id);
+        choice.disabled = libraryBusy || !media.removable; choice.setAttribute('aria-label', `选择 ${media.title}`);
+        if (!media.removable) choice.title = media.removeReason || '此媒体不能删除';
+        choice.onchange = () => { if (choice.checked) selectedLibrary.add(media.id); else selectedLibrary.delete(media.id); libraryControls(); };
+        row.append(choice);
+      }
+      const info = document.createElement('div'); info.className = 'library-meta'; const title = document.createElement('strong'); title.textContent = media.title;
+      const detail = document.createElement('small'); detail.textContent = [media.group, media.episodeTitle, media.kind === 'hls' ? 'HLS' : '视频', state?.user.admin && !media.removable ? media.removeReason : ''].filter(Boolean).join(' · ');
+      info.append(title, detail); row.append(info);
+      const actions = document.createElement('div'); actions.className = 'library-actions';
+      button(actions, '加载到放映室', () => select({ mode: 'local', id: media.id }), busy || !state?.canControl).dataset.libraryPlay = 'true';
+      if (state?.user.admin) button(actions, '删除', () => removeLibrary([media.id]), libraryBusy || !media.removable).className = 'quiet danger';
+      row.append(actions); section.append(row);
+    }
+    $('library').append(section);
+  }
+  libraryControls();
+}
+async function removeLibrary(ids) {
+  if (libraryBusy || !state?.user.admin || !ids.length || !confirm(`删除选中的 ${ids.length} 个媒体及下载记录？`)) return;
+  libraryBusy = true; renderLibrary();
+  try {
+    const result = await api('/api/library/remove', { ids });
+    for (const id of result.ids) selectedLibrary.delete(id);
+    await library(); notice(`已删除 ${result.removed} 个媒体`);
+  } catch (error) { await library(); throw error; }
+  finally { libraryBusy = false; renderLibrary(); }
+}
+if ($('library-filter')) $('library-filter').oninput = renderLibrary;
+if ($('library-select-all')) $('library-select-all').onclick = () => { for (const media of filteredLibrary()) if (media.removable) selectedLibrary.add(media.id); renderLibrary(); };
+if ($('library-clear-selection')) $('library-clear-selection').onclick = () => { selectedLibrary.clear(); renderLibrary(); };
+if ($('library-remove-selected')) $('library-remove-selected').onclick = () => attempt(() => removeLibrary([...selectedLibrary]));
+function eta(seconds) {
+  const rounded = Math.ceil(seconds); if (rounded < 60) return `${rounded} 秒`;
+  if (rounded < 3600) return `${Math.ceil(rounded / 60)} 分钟`;
+  return `${Math.floor(rounded / 3600)} 小时 ${Math.ceil(rounded % 3600 / 60)} 分钟`;
+}
+function jobMetric(parent, label, value, className = '') {
+  const metric = document.createElement('div'); metric.className = `job-metric ${className}`.trim();
+  const caption = document.createElement('small'); caption.textContent = label;
+  const content = document.createElement('strong'); content.textContent = value; metric.append(caption, content); parent.append(metric);
 }
 let loadingJobs = false;
 async function downloads() {
@@ -142,21 +212,29 @@ async function downloads() {
     const expanded = new Set([...$('jobs').querySelectorAll('details[open]')].map(node => node.dataset.job));
     const result = await api('/api/downloads'); $('jobs').replaceChildren(); $('storage').textContent = `缓存 ${bytes(result.usedBytes)} / ${bytes(result.quota)}`;
     const labels = { queued: '排队中', running: '下载中', done: '已完成', failed: '失败', cancelled: '已取消' };
-    const stages = { queued: '等待开始', resolving: '解析视频地址', playlist: '读取 HLS 清单', downloading: '传输视频', cancelling: '正在取消', finalizing: '整理到媒体库', done: '可在媒体库播放', failed: '下载失败', cancelled: '任务已取消' };
+    const stages = { queued: '等待开始', resolving: '正在准备', playlist: '读取分段', downloading: '传输视频', cancelling: '正在取消', finalizing: '整理到媒体库', done: '可在媒体库播放', failed: '下载失败', cancelled: '任务已取消' };
     const counts = Object.fromEntries(Object.keys(labels).map(status => [status, result.jobs.filter(job => job.status === status).length]));
     $('queue-summary').textContent = `排队 ${counts.queued} · 进行中 ${counts.running} · 已完成 ${counts.done} · 失败 ${counts.failed} · 已取消 ${counts.cancelled}`;
-    if (!result.jobs.length) $('jobs').textContent = '还没有下载任务，搜索番剧后可勾选整季下载。';
+    if (!result.jobs.length) $('jobs').textContent = '暂无下载任务';
     const queue = result.jobs.filter(job => job.status === 'queued');
     for (const job of result.jobs.slice().reverse()) {
       const active = ['running', 'queued'].includes(job.status);
       const ratio = job.status === 'done' ? 1 : job.kind === 'hls' && job.total ? job.completed / job.total : job.expectedBytes ? job.bytes / job.expectedBytes : null;
-      const percent = ratio === null ? '大小待来源提供' : `${Math.min(job.status === 'done' ? 100 : 99.9, Math.max(0, ratio * 100)).toFixed(1)}%`;
-      const detail = `${labels[job.status] || job.status} · ${stages[job.status === 'running' ? job.stage : job.status] || '处理中'}${job.status === 'queued' ? ` · 第 ${queue.indexOf(job) + 1} 位` : ''} · ${percent}`;
-      const row = item($('jobs'), job.title || job.source, detail); row.classList.add('download-job');
-      const transfer = document.createElement('small');
-      transfer.textContent = `${job.group ? job.group + ' · ' : ''}${job.episodeTitle || (job.episodeNumber ? `第 ${job.episodeNumber} 集` : '')}${job.kind === 'hls' ? ` · 分段 ${job.completed}/${job.total || '?'}${job.currentSegment && job.status === 'running' ? `，正在传输第 ${job.currentSegment} 段` : ''}` : ''} · ${bytes(job.bytes)} / ${job.expectedBytes ? bytes(job.expectedBytes) : '总大小未知'}${job.status === 'running' && job.stage === 'downloading' ? ` · ${bytes(job.speedBytesPerSecond)}/s` : ''}`;
-      row.append(transfer);
-      if (ratio !== null || job.status === 'running') { const progress = document.createElement('progress'); progress.max = 1; if (ratio !== null) progress.value = Math.max(0, Math.min(1, ratio)); progress.setAttribute('aria-label', `${job.title} 下载进度`); row.append(progress); }
+      const percent = ratio === null ? '未知' : `${Math.min(job.status === 'done' ? 100 : 99.9, Math.max(0, ratio * 100)).toFixed(1)}%`;
+      const row = document.createElement('article'); row.className = 'item download-job'; $('jobs').append(row);
+      const header = document.createElement('div'); header.className = 'job-header'; const name = document.createElement('strong'); name.textContent = job.title || job.source;
+      const status = document.createElement('span'); status.className = `job-status status-${job.status}`; status.textContent = labels[job.status] || job.status; header.append(name, status); row.append(header);
+      const stage = document.createElement('small'); stage.className = 'job-stage'; stage.textContent = [job.group, job.episodeTitle || (job.episodeNumber ? `第 ${job.episodeNumber} 集` : ''), stages[job.status === 'running' ? job.stage : job.status] || '处理中', job.status === 'queued' ? `队列第 ${queue.indexOf(job) + 1} 位` : ''].filter(Boolean).join(' · '); row.append(stage);
+      const metrics = document.createElement('div'); metrics.className = 'job-metrics';
+      jobMetric(metrics, '进度', percent, 'job-percent');
+      jobMetric(metrics, '已下载 / 总量', `${bytes(job.bytes)} / ${job.expectedBytes ? bytes(job.expectedBytes) : '未知'}`, 'job-size');
+      if (job.status === 'running' && job.stage === 'downloading') {
+        const speed = Math.max(0, Number(job.speedBytesPerSecond) || 0); jobMetric(metrics, '实时速度', `${bytes(speed)}/s`, 'job-speed');
+        if (speed > 0 && job.expectedBytes > job.bytes) jobMetric(metrics, '预计剩余', eta((job.expectedBytes - job.bytes) / speed), 'job-eta');
+      }
+      if (job.kind === 'hls') jobMetric(metrics, '分段', `${job.completed || 0} / ${job.total || '未知'}`, 'job-segments');
+      row.append(metrics);
+      if (ratio !== null || job.status === 'running') { const progress = document.createElement('progress'); progress.className = 'job-progress'; progress.max = 1; if (ratio !== null) progress.value = Math.max(0, Math.min(1, ratio)); progress.setAttribute('aria-label', `${job.title} 下载进度`); row.append(progress); }
       if (job.error) { const error = document.createElement('p'); error.className = 'download-error'; error.textContent = job.error; row.append(error); }
       const metadata = document.createElement('details'); metadata.dataset.job = job.id; metadata.open = expanded.has(job.id);
       const summary = document.createElement('summary'); summary.textContent = '任务详情'; metadata.append(summary);
@@ -164,8 +242,9 @@ async function downloads() {
       const dates = document.createElement('p'); dates.textContent = [['添加', job.createdAt], ['开始', job.startedAt], ['结束', job.finishedAt]].filter(([, value]) => value).map(([label, value]) => `${label} ${new Date(value).toLocaleString('zh-CN')}`).join(' · '); metadata.append(dates);
       try { const source = new URL(job.source); if (['http:', 'https:'].includes(source.protocol)) { const link = document.createElement('a'); link.href = source.href; link.textContent = '查看原始片源'; link.target = '_blank'; link.rel = 'noreferrer noopener'; metadata.append(link); } } catch { /* Old records can lack a source. */ }
       row.append(metadata);
-      button(row, active ? '取消下载' : '删除记录与文件', async () => { if (job.status === 'done' && !confirm('删除这个已下载的视频及任务记录？')) return; await api(`/api/downloads/${job.id}/remove`, {}); await downloads(); });
-      if (['failed', 'cancelled'].includes(job.status)) button(row, '重新排队', () => download(job.source));
+      const actions = document.createElement('div'); actions.className = 'job-actions'; row.append(actions);
+      button(actions, active ? '取消下载' : '删除记录与文件', async () => { if (job.status === 'done' && !confirm('删除这个已下载的视频及任务记录？')) return; await api(`/api/downloads/${job.id}/remove`, {}); await downloads(); });
+      if (['failed', 'cancelled'].includes(job.status)) button(actions, '重新排队', () => download(job.source));
     }
   } finally { loadingJobs = false; }
 }
@@ -286,27 +365,29 @@ $('bilibili-logout').onclick = () => attempt(logoutAccount);
 let settingsBusy = false;
 async function playbackSettings(save = false) {
   if (settingsBusy || !state?.user.admin) return; settingsBusy = true;
-  $('save-playback-settings').disabled = $('bilibili-delivery').disabled = true;
+  const delivery = $('playback-delivery') || $('bilibili-delivery');
+  $('save-playback-settings').disabled = delivery.disabled = true;
   $('playback-settings-status').textContent = save ? '保存中…' : '读取中…';
   try {
-    const result = await api('/api/settings/playback', save ? { bilibiliDelivery: $('bilibili-delivery').value } : undefined);
-    $('bilibili-delivery').value = result.bilibiliDelivery === 'proxy' ? 'proxy' : 'direct';
+    const result = await api('/api/settings/playback', save ? { delivery: delivery.value } : undefined);
+    delivery.value = (result.delivery ?? result.bilibiliDelivery) === 'proxy' ? 'proxy' : 'direct';
     $('playback-settings-status').textContent = save ? '已保存，下次选片生效。' : '';
   } catch (error) { $('playback-settings-status').textContent = error.message || '设置暂不可用'; throw error; }
-  finally { settingsBusy = false; $('save-playback-settings').disabled = $('bilibili-delivery').disabled = false; }
+  finally { settingsBusy = false; $('save-playback-settings').disabled = delivery.disabled = false; }
 }
 $('playback-settings-form').onsubmit = event => { event.preventDefault(); attempt(() => playbackSettings(true)); };
 document.addEventListener('visibilitychange', () => { if (document.hidden) stopQrPolling(); else queueQrPoll(); });
 window.addEventListener('pagehide', () => { pageLeaving = true; stopQrPolling(); });
 window.addEventListener('pageshow', () => { pageLeaving = false; queueQrPoll(); });
 document.querySelectorAll('[data-tab]').forEach(tab => { tab.onclick = () => {
-  if (['bilibili', 'download'].includes(tab.dataset.tab) && !state?.user.admin) return;
+  if (['bilibili', 'download', 'settings'].includes(tab.dataset.tab) && !state?.user.admin) return;
   stopQrPolling(); activeTab = tab.dataset.tab;
   document.querySelectorAll('[data-tab]').forEach(node => node.classList.toggle('active', node === tab));
-  for (const name of ['online', 'local', 'download', 'bilibili']) $(`${name}-panel`).hidden = name !== activeTab;
+  for (const name of ['online', 'local', 'download', 'bilibili', 'settings']) if ($(`${name}-panel`)) $(`${name}-panel`).hidden = name !== activeTab;
   if (activeTab === 'local') attempt(library);
   if (activeTab === 'download') attempt(downloads);
-  if (activeTab === 'bilibili') { attempt(() => loadAccount()); attempt(() => playbackSettings()); queueQrPoll(); }
+  if (activeTab === 'bilibili') { attempt(() => loadAccount()); queueQrPoll(); }
+  if (activeTab === 'settings') attempt(() => playbackSettings());
 }; });
 setInterval(() => { if (!document.hidden && state?.user.admin && activeTab === 'download') attempt(downloads); }, 2000);
 attempt(async () => {

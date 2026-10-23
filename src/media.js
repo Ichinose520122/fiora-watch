@@ -20,11 +20,24 @@ export class MediaLibrary {
     this.resolve = dependencies.resolve || resolveMedia;
     this.request = dependencies.request || requestPublic;
     this.read = dependencies.read || fetchText;
+    this.now = dependencies.now || Date.now;
+    this.transfers = new WeakMap();
     this.root = path.join(config.dataDir, 'media');
     this.tmp = path.join(config.dataDir, 'partial');
+    this.trash = path.join(config.dataDir, 'trash');
     fs.mkdirSync(this.root, { recursive: true });
     fs.mkdirSync(this.tmp, { recursive: true });
+    fs.mkdirSync(this.trash, { recursive: true });
     fs.mkdirSync(config.libraryDir, { recursive: true });
+    // A deletion commits when its records disappear from persisted state. Keep
+    // each original job ID so interruption before that commit can be rolled back.
+    const completed = new Set(this.store.data.jobs.filter(job => job.status === 'done').map(job => job.id));
+    for (const entry of fs.readdirSync(this.trash, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(entry.name)) continue;
+      const staged = path.join(this.trash, entry.name); const original = path.join(this.root, entry.name);
+      if (completed.has(entry.name) && !fs.existsSync(original)) fs.renameSync(staged, original);
+      else fs.rmSync(staged, { recursive: true, force: true });
+    }
     // Only our UUID-named staging directories can be cleaned after a crash.
     for (const entry of fs.readdirSync(this.tmp)) {
       if (/^[a-f0-9-]{36}$/.test(entry)) fs.rmSync(path.join(this.tmp, entry), { recursive: true, force: true });
@@ -39,14 +52,71 @@ export class MediaLibrary {
         if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
         const relative = prefix + entry.name;
         if (entry.isDirectory()) walk(path.join(dir, entry.name), relative + '/', depth + 1);
-        else if (/\.(mp4|webm)$/i.test(entry.name)) items.push({ id: `local:${relative}`, title: relative, kind: 'file', url: `/media/local/${relative.split('/').map(encodeURIComponent).join('/')}` });
+        else if (/\.(mp4|webm)$/i.test(entry.name)) items.push({ id: `local:${relative}`, title: relative, kind: 'file', readOnly: true, removable: false, removeReason: '挂载媒体只读', url: `/media/local/${relative.split('/').map(encodeURIComponent).join('/')}` });
       }
     };
     walk(this.config.libraryDir);
     for (const job of this.store.data.jobs) {
-      if (job.status === 'done') items.push({ id: `download:${job.id}`, title: job.title, cover: job.cover || '', seriesTitle: job.seriesTitle || '', source: job.source, kind: job.kind === 'hls' ? 'hls' : 'file', url: `/media/download/${job.id}/${job.kind === 'hls' ? 'index.m3u8' : 'video.mp4'}` });
+      if (job.status === 'done') {
+        const id = `download:${job.id}`; const inUse = this.inUse(id);
+        items.push({ id, title: job.title, cover: job.cover || '', seriesTitle: job.seriesTitle || '', source: job.source,
+          episodeTitle: job.episodeTitle || '', episodeNumber: job.episodeNumber, group: job.group || '',
+          readOnly: false, inUse, removable: !inUse, removeReason: inUse ? '房间正在使用' : '',
+          kind: job.kind === 'hls' ? 'hls' : 'file', url: `/media/download/${job.id}/${job.kind === 'hls' ? 'index.m3u8' : 'video.mp4'}` });
+      }
     }
     return items;
+  }
+  inUse(id) { return Object.values(this.store.data.rooms).some(room => room.media?.id === id); }
+  removeBatch(ids) {
+    if (!Array.isArray(ids) || !ids.length || ids.length > 1000) throw new Error('请选择 1–1000 个已下载媒体');
+    const unique = [...new Set(ids)];
+    // Validate every selection before touching files or persisted records.
+    const jobs = unique.map(id => {
+      if (typeof id !== 'string' || !/^download:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(id)) throw new Error('只能删除已下载媒体，挂载媒体只读');
+      const job = this.store.data.jobs.find(item => `download:${item.id}` === id && item.status === 'done');
+      if (!job) throw new Error('媒体不存在或尚未下载完成，请刷新后重试');
+      if (this.inUse(id)) throw new Error('所选媒体仍被房间使用，请先切换或清空视频');
+      return job;
+    });
+    const moved = []; const previous = this.store.data.jobs;
+    try {
+      for (const job of jobs) {
+        const source = path.join(this.root, job.id); const destination = path.join(this.trash, job.id);
+        if (fs.existsSync(destination)) throw new Error('媒体删除恢复尚未完成，请重启后重试');
+        if (fs.existsSync(source)) { fs.renameSync(source, destination); moved.push({ source, destination }); }
+      }
+      const deleting = new Set(jobs);
+      this.store.data.jobs = previous.filter(job => !deleting.has(job)); this.store.save();
+    } catch (error) {
+      this.store.data.jobs = previous;
+      for (const { source, destination } of moved.reverse()) fs.renameSync(destination, source);
+      throw error;
+    }
+    // A committed deletion stays deleted even if cleanup is interrupted. Startup
+    // removes trash only when persisted state no longer references its job ID.
+    for (const { destination } of moved) { try { fs.rmSync(destination, { recursive: true, force: true }); } catch { /* Startup cleanup retries. */ } }
+    this.notify(); return { removed: jobs.length, ids: unique };
+  }
+  transferSpeed(job, now = this.now()) {
+    if (job.status !== 'running' || job.stage !== 'downloading') return 0;
+    let samples = this.transfers.get(job);
+    if (!samples) { samples = [{ time: (job.transferStartedAt ?? now) - 1, bytes: 0 }]; this.transfers.set(job, samples); }
+    const last = samples.at(-1);
+    if (last.bytes !== job.bytes || now - last.time >= 250) {
+      if (samples.length > 1 && now - last.time < 250) { last.time = now; last.bytes = job.bytes; }
+      else samples.push({ time: now, bytes: job.bytes });
+    }
+    const boundary = Math.max((job.transferStartedAt ?? now) - 1, now - 5000);
+    while (samples.length > 1 && samples[1].time <= boundary) samples.shift();
+    const first = samples[0]; const next = samples[1];
+    const base = next && first.time < boundary
+      ? first.bytes + (next.bytes - first.bytes) * (boundary - first.time) / (next.time - first.time)
+      : first.bytes;
+    return Math.round(Math.max(0, job.bytes - base) * 1000 / Math.max(1, now - Math.max(boundary, first.time)));
+  }
+  jobs() {
+    return this.store.data.jobs.map(job => ({ ...job, speedBytesPerSecond: this.transferSpeed(job) }));
   }
   usedBytes() {
     let bytes = 0;
@@ -55,7 +125,7 @@ export class MediaLibrary {
       const file = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(file); else bytes += fs.statSync(file).size;
     } };
-    walk(this.root); walk(this.tmp); return bytes;
+    walk(this.root); walk(this.tmp); walk(this.trash); return bytes;
   }
   enqueue(source, actor) {
     return this.enqueueBatch([source], actor, { reuseCompleted: false }).jobs[0];
@@ -88,9 +158,9 @@ export class MediaLibrary {
     return { jobs, added: additions.length, skipped: normalized.length - additions.length };
   }
   update(job, values = {}, force = false) {
-    const now = Date.now(); Object.assign(job, values, { updatedAt: now });
+    const now = this.now(); Object.assign(job, values, { updatedAt: now });
     if (job.status === 'running') {
-      job.speedBytesPerSecond = Math.round(job.bytes * 1000 / Math.max(1, now - (job.transferStartedAt || now)));
+      job.speedBytesPerSecond = this.transferSpeed(job, now);
       job.progress = job.kind === 'hls' ? (job.total ? job.completed / job.total : 0) : (job.expectedBytes ? job.bytes / job.expectedBytes : 0);
       job.progress = Math.min(0.999, Math.max(0, job.progress));
     }
@@ -101,6 +171,7 @@ export class MediaLibrary {
     if (!job) throw new Error('下载任务不存在');
     if (job.status === 'running') { this.update(job, { stage: 'cancelling', cancelRequestedAt: Date.now() }, true); this.abort?.abort(new Error('下载已取消')); return; }
     if (job.status === 'queued') { this.update(job, { status: 'cancelled', stage: 'cancelled', finishedAt: Date.now(), speedBytesPerSecond: 0 }, true); return; }
+    if (job.status === 'done') return this.removeBatch([`download:${id}`]);
     if (Object.values(this.store.data.rooms).some(room => room.media?.id === `download:${id}`)) throw new Error('此视频仍被影院选中，请先切换或清空视频');
     if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error('任务编号无效');
     fs.rmSync(path.join(this.root, id), { recursive: true, force: true });
