@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>一起看卡片预览</title>
+<style>
+  body {
+    margin: 0;
+    background: #ccd9d0;
+    color: #1e2e2b;
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  .stage {
+    padding: 32px;
+    display: grid;
+    gap: 24px;
+    max-width: 640px;
+  }
+  .case {
+    display: grid;
+    gap: 8px;
+  }
+  .label {
+    font-size: 12px;
+    font-weight: 500;
+    color: #46605b;
+  }
+  * {
+    box-sizing: border-box;
+  }
+  @media (prefers-color-scheme: dark) {
+    body {
+      background: #101716;
+      color: #eef5f4;
+    }
+    .label {
+      color: #8fa6a2;
+    }
+  }
+  @media (max-width: 480px) {
+    .stage {
+      padding: 20px;
+    }
+  }
+  .card {
+    --watch-surface: rgba(255, 255, 255, 0.95);
+    --watch-surface-hover: #ffffff;
+    --watch-border: rgba(79, 155, 145, 0.22);
+    --watch-border-hover: #4f9b91;
+    --watch-title: #1e2e2b;
+    --watch-accent: #3d8c82;
+    --watch-accent-soft: #eaf4f2;
+    --watch-poster: linear-gradient(145deg, #e3f0ed 0%, #d1e5e1 100%);
+    --watch-placeholder: #4f9b91;
+    display: flex;
+    align-items: stretch;
+    width: 316px;
+    max-width: 100%;
+    min-height: 120px;
+    box-sizing: border-box;
+    padding: 8px;
+    overflow: hidden;
+    text-align: left;
+    font: inherit;
+    border: 1px solid var(--watch-border);
+    border-radius: 15px;
+    background: var(--watch-surface);
+    color: var(--watch-title);
+    cursor: pointer;
+    box-shadow: 0 3px 12px rgba(34, 68, 63, 0.06);
+    transition: transform 0.18s ease, border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
+  }
+  .card:hover {
+    background: var(--watch-surface-hover);
+    border-color: var(--watch-border-hover);
+    box-shadow: 0 6px 18px rgba(45, 95, 88, 0.12);
+    transform: translateY(-1px);
+  }
+  .card:hover .join {
+    background: #4f9b91;
+    color: #ffffff;
+  }
+  .card:hover .join svg {
+    transform: translateX(2px);
+  }
+  .card:active {
+    transform: translateY(0);
+  }
+  .card:focus-visible {
+    outline: 2px solid var(--watch-border-hover);
+    outline-offset: 3px;
+  }
+  .card:disabled {
+    cursor: wait;
+    transform: none;
+  }
+  .card:disabled .join {
+    opacity: 0.72;
+  }
+  .poster {
+    display: flex;
+    width: 78px;
+    height: 104px;
+    flex-shrink: 0;
+    overflow: hidden;
+    border-radius: 10px;
+    background: var(--watch-poster);
+  }
+  .cover {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-height: 104px;
+    object-fit: cover;
+  }
+  .placeholder {
+    display: grid;
+    width: 100%;
+    height: 100%;
+    place-items: center;
+    color: var(--watch-placeholder);
+  }
+  .placeholder svg {
+    width: 34px;
+    height: 34px;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .info {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: space-between;
+    min-width: 0;
+    padding: 6px 10px 6px 14px;
+  }
+  .title {
+    display: -webkit-box;
+    max-width: 100%;
+    margin: 2px 0 10px;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    font-size: 15.5px;
+    font-weight: 600;
+    line-height: 1.42;
+    letter-spacing: 0.1px;
+  }
+  .join {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 30px;
+    max-width: 100%;
+    box-sizing: border-box;
+    margin-top: auto;
+    padding: 4px 11px;
+    border-radius: 8px;
+    background: var(--watch-accent-soft);
+    color: var(--watch-accent);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 20px;
+    white-space: nowrap;
+    transition: background-color 0.18s ease, color 0.18s ease;
+  }
+  .join svg {
+    width: 14px;
+    height: 14px;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform 0.18s ease;
+  }
+  @media (max-width: 480px) {
+    .card {
+      width: 292px;
+      min-height: 112px;
+      padding: 7px;
+    }
+    .poster {
+      width: 72px;
+      height: 96px;
+    }
+    .cover {
+      min-height: 96px;
+    }
+    .info {
+      padding: 4px 8px 4px 12px;
+    }
+    .title {
+      font-size: 14.5px;
+    }
+  }
+  @media (prefers-color-scheme: dark) {
+    .card {
+      --watch-surface: #182322;
+      --watch-surface-hover: #1d2b29;
+      --watch-border: #2a3d3a;
+      --watch-border-hover: #5bb3a7;
+      --watch-title: #eef5f4;
+      --watch-accent: #6ec2b6;
+      --watch-accent-soft: rgba(79, 155, 145, 0.18);
+      --watch-poster: linear-gradient(145deg, #213230 0%, #162220 100%);
+      --watch-placeholder: #6ec2b6;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+    }
+  }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="case">
+    <div class="label">未设置封面</div>
+    <button type="button" class="card" aria-label="葬送的芙莉莲，进入影院" aria-busy="false">
+      <span class="poster">
+        <span class="placeholder" aria-hidden="true">
+          <svg viewBox="0 0 40 40" fill="none">
+            <rect x="6" y="7" width="28" height="26" rx="5"></rect>
+            <path d="M11 7v26M29 7v26M6 13h5M6 20h5M6 27h5M29 13h5M29 20h5M29 27h5" opacity="0.45"></path>
+            <path d="M17.5 15.5 25 20l-7.5 4.5v-9Z" fill="currentColor" stroke="none"></path>
+          </svg>
+        </span>
+      </span>
+      <span class="info">
+        <strong class="title" title="葬送的芙莉莲">葬送的芙莉莲</strong>
+        <span class="join">
+          <span>加入一起看</span>
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M3.5 8h8.5M8.5 4.5 12 8l-3.5 3.5"></path>
+          </svg>
+        </span>
+      </span>
+    </button>
+  </div>
+  <div class="case">
+    <div class="label">长片名</div>
+    <button type="button" class="card" aria-label="剧场版 紫罗兰永恒花园：那些永远不会褪色的记忆与约定，进入影院" aria-busy="false">
+      <span class="poster">
+        <span class="placeholder" aria-hidden="true">
+          <svg viewBox="0 0 40 40" fill="none">
+            <rect x="6" y="7" width="28" height="26" rx="5"></rect>
+            <path d="M11 7v26M29 7v26M6 13h5M6 20h5M6 27h5M29 13h5M29 20h5M29 27h5" opacity="0.45"></path>
+            <path d="M17.5 15.5 25 20l-7.5 4.5v-9Z" fill="currentColor" stroke="none"></path>
+          </svg>
+        </span>
+      </span>
+      <span class="info">
+        <strong class="title" title="剧场版 紫罗兰永恒花园：那些永远不会褪色的记忆与约定">剧场版 紫罗兰永恒花园：那些永远不会褪色的记忆与约定</strong>
+        <span class="join">
+          <span>加入一起看</span>
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M3.5 8h8.5M8.5 4.5 12 8l-3.5 3.5"></path>
+          </svg>
+        </span>
+      </span>
+    </button>
+  </div>
+  <div class="case">
+    <div class="label">旧邀请</div>
+    <button type="button" class="card" aria-label="一起看，进入影院" aria-busy="false">
+      <span class="poster">
+        <span class="placeholder" aria-hidden="true">
+          <svg viewBox="0 0 40 40" fill="none">
+            <rect x="6" y="7" width="28" height="26" rx="5"></rect>
+            <path d="M11 7v26M29 7v26M6 13h5M6 20h5M6 27h5M29 13h5M29 20h5M29 27h5" opacity="0.45"></path>
+            <path d="M17.5 15.5 25 20l-7.5 4.5v-9Z" fill="currentColor" stroke="none"></path>
+          </svg>
+        </span>
+      </span>
+      <span class="info">
+        <strong class="title" title="一起看">一起看</strong>
+        <span class="join">
+          <span>加入一起看</span>
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M3.5 8h8.5M8.5 4.5 12 8l-3.5 3.5"></path>
+          </svg>
+        </span>
+      </span>
+    </button>
+  </div>
+</div>
+</body>
+</html>
