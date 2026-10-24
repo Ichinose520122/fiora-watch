@@ -92,6 +92,9 @@ test('subtitle failure does not stop loading the video and fallback fullscreen r
   assert.equal(f.get('subtitle-message').textContent, '字幕暂时不可用，视频可继续播放');
   assert.equal(f.get('player-loading').hidden, false);
   f.video.dispatchEvent(new Event('canplay')); assert.equal(f.get('player-loading').hidden, true);
+  await f.get('theater').onclick(); assert.equal(f.get('player-shell').classList.contains('web-fullscreen'), true);
+  assert.equal(f.get('theater').attributes['aria-label'], '退出影院模式');
+  await f.get('theater').onclick(); assert.equal(f.get('player-shell').classList.contains('web-fullscreen'), false);
   await f.get('fullscreen').onclick(); assert.equal(f.get('player-shell').classList.contains('web-fullscreen'), true);
   assert.equal(f.get('fullscreen').attributes['aria-label'], '退出全屏');
   await f.get('fullscreen').onclick(); assert.equal(f.get('player-shell').classList.contains('web-fullscreen'), false);

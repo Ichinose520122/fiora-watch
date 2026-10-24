@@ -55,9 +55,9 @@ export function createDanmaku({ container, button, video }) {
       const message = queue.shift(); const node = doc.createElement('span');
       node.textContent = message.text;
       Object.assign(node.style, { position: 'absolute', top: `${12 + lane * rowHeight}px`, left: '0', whiteSpace: 'nowrap',
-        font: `600 ${fontSize}px/1.5 system-ui,sans-serif`, color: message.self ? '#d9c9ff' : '#fff',
-        textShadow: '0 1px 3px #000, 1px 0 2px #000, -1px 0 2px #000', padding: '1px 5px',
-        borderRadius: '5px', border: message.self ? '1px solid #d9c9ff88' : '1px solid transparent', willChange: 'transform' });
+        font: `600 ${fontSize}px/1.5 system-ui,sans-serif`, color: message.self ? '#82dfd3' : '#fff',
+        textShadow: '0 1px 3px #000, 1px 0 2px #000, -1px 0 2px #000', padding: '1px 6px',
+        borderRadius: '6px', background: message.self ? 'rgba(14, 21, 20, 0.42)' : 'transparent', border: message.self ? '1px solid #82dfd388' : '1px solid transparent', willChange: 'transform' });
       container.append(node);
       const entry = { node, lane }; active.set(message.id, entry);
       const finished = () => { remove(message.id); drain(); };

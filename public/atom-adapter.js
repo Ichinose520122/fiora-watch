@@ -4,8 +4,10 @@ export function mountAtomPlayer({ requestControl, document: doc = document }) {
   const original = doc.getElementById('video');
   const mount = doc.createElement('div'); mount.id = 'atom-mount';
   const screen = original.parentElement;
+  const theater = doc.getElementById('theater');
   const movable = ['quality-button', 'subtitle-button'].map(id => doc.getElementById(id).parentElement);
   movable.push(doc.getElementById('danmaku-toggle'));
+  if (theater) movable.push(theater);
   const previousParents = movable.map(node => [node, node.parentElement, node.nextSibling]);
   let atom; let fullscreenRequest;
   const isFullscreen = () => doc.fullscreenElement === shell || doc.webkitFullscreenElement === shell || shell.classList.contains('web-fullscreen');
@@ -14,7 +16,7 @@ export function mountAtomPlayer({ requestControl, document: doc = document }) {
     screen.prepend(mount);
     atom = new window.aplayer({
       id: 'FioraWatch', container: '#atom-mount', lang: 'zh-CN', dark: true,
-      color: '#62d6ad', video: { url: '', type: 'watch', key: '', volume: 1, moreAttr: { playsinline: '', preload: 'auto' } },
+      color: '#5bb3a7', video: { url: '', type: 'watch', key: '', volume: 1, moreAttr: { playsinline: '', preload: 'auto' } },
       control: { button: { volume: true, fullScreen: true, back: false } },
       watchControl: requestControl,
       watchFullscreen: () => fullscreenRequest?.(), watchIsFullscreen: isFullscreen,
@@ -37,6 +39,7 @@ export function mountAtomPlayer({ requestControl, document: doc = document }) {
       video.removeEventListener('volumechange', updateMuted);
     });
     const controls = atom.player.template.$right;
+    if (theater) controls.insertBefore(theater, controls.lastElementChild);
     for (const id of ['quality-button', 'subtitle-button']) controls.prepend(doc.getElementById(id).parentElement);
     controls.prepend(doc.getElementById('danmaku-toggle'));
     shell.classList.add('uses-atom');

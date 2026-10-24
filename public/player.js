@@ -168,23 +168,52 @@ export function createPlayer({ video, document: doc = document, subtitles, notif
     };
   }
   doc.addEventListener('click', event => { if (!event.target.closest('.player-setting')) closeMenus(); });
-  doc.addEventListener('keydown', event => { keyboardInput = true; reveal(); if (event.key === 'Escape') { closeMenus(); if (shell.classList.contains('web-fullscreen')) toggleFullscreen(); } });
+  let theaterMode = false;
+  doc.addEventListener('keydown', event => { keyboardInput = true; reveal(); if (event.key === 'Escape') { closeMenus(); if (shell.classList.contains('web-fullscreen')) { theaterMode = false; shell.classList.remove('web-fullscreen'); doc.body.classList.remove('player-fullscreen'); updateFullscreen(); } } });
   function updateFullscreen() {
-    const full = doc.fullscreenElement === shell || doc.webkitFullscreenElement === shell || shell.classList.contains('web-fullscreen');
+    const nativeFull = doc.fullscreenElement === shell || doc.webkitFullscreenElement === shell;
+    const webFull = shell.classList.contains('web-fullscreen');
+    const full = nativeFull || (webFull && !theaterMode);
+    const theater = webFull && !nativeFull;
     pointerControls = false; pointerPressed = false;
-    element('fullscreen').setAttribute('aria-label', full ? '退出全屏' : '全屏'); element('fullscreen').setAttribute('aria-pressed', String(full)); reveal();
+    element('fullscreen').setAttribute('aria-label', full ? '退出全屏' : '全屏'); element('fullscreen').setAttribute('aria-pressed', String(full));
+    element('theater').setAttribute('aria-label', theater ? '退出影院模式' : '影院模式'); element('theater').setAttribute('aria-pressed', String(theater));
+    reveal();
+  }
+  async function toggleTheater() {
+    const next = !(shell.classList.contains('web-fullscreen') && theaterMode);
+    try {
+      if (doc.fullscreenElement) await doc.exitFullscreen();
+      else if (doc.webkitFullscreenElement) doc.webkitExitFullscreen();
+    } catch { /* Ignore fullscreen exit failure when switching to theater mode. */ }
+    theaterMode = next;
+    shell.classList.toggle('web-fullscreen', next);
+    doc.body.classList.toggle('player-fullscreen', next);
+    updateFullscreen();
   }
   async function toggleFullscreen() {
     try {
       if (doc.fullscreenElement) await doc.exitFullscreen();
       else if (doc.webkitFullscreenElement) doc.webkitExitFullscreen();
-      else if (shell.classList.contains('web-fullscreen')) { shell.classList.remove('web-fullscreen'); doc.body.classList.remove('player-fullscreen'); }
-      else if (shell.requestFullscreen) await shell.requestFullscreen();
-      else if (shell.webkitRequestFullscreen) shell.webkitRequestFullscreen();
-      else { shell.classList.add('web-fullscreen'); doc.body.classList.add('player-fullscreen'); }
-    } catch { shell.classList.toggle('web-fullscreen'); doc.body.classList.toggle('player-fullscreen', shell.classList.contains('web-fullscreen')); }
+      else if (shell.classList.contains('web-fullscreen') && (!theaterMode || (!shell.requestFullscreen && !shell.webkitRequestFullscreen))) {
+        theaterMode = false; shell.classList.remove('web-fullscreen'); doc.body.classList.remove('player-fullscreen');
+      } else if (shell.requestFullscreen) {
+        theaterMode = false; shell.classList.remove('web-fullscreen'); doc.body.classList.remove('player-fullscreen');
+        await shell.requestFullscreen();
+      } else if (shell.webkitRequestFullscreen) {
+        theaterMode = false; shell.classList.remove('web-fullscreen'); doc.body.classList.remove('player-fullscreen');
+        shell.webkitRequestFullscreen();
+      } else {
+        theaterMode = false; shell.classList.add('web-fullscreen'); doc.body.classList.add('player-fullscreen');
+      }
+    } catch {
+      theaterMode = false;
+      shell.classList.toggle('web-fullscreen');
+      doc.body.classList.toggle('player-fullscreen', shell.classList.contains('web-fullscreen'));
+    }
     updateFullscreen();
   }
+  element('theater').onclick = toggleTheater;
   element('fullscreen').onclick = toggleFullscreen;
   doc.addEventListener('fullscreenchange', updateFullscreen); doc.addEventListener('webkitfullscreenchange', updateFullscreen);
   shell.addEventListener('pointermove', event => { keyboardInput = false; pointerControls = Boolean(event.target.closest('.player-controls, .atom-controls')); reveal(); });
@@ -197,5 +226,5 @@ export function createPlayer({ video, document: doc = document, subtitles, notif
   for (const name of ['pause', 'ended']) video.addEventListener(name, () => { loading(''); reveal(); });
   video.addEventListener('loadedmetadata', () => { renderQuality(); renderSubtitles(); });
   video.textTracks.addEventListener('addtrack', event => { if (!changingSubtitle) { if (subtitle === 'off') event.track.mode = 'disabled'; renderSubtitles(); } });
-  return { begin(next, version, options) { element('player-error').hidden = true; return begin(next, version, options); }, attachDash, attachHls, fail, loading, reveal, toggleFullscreen };
+  return { begin(next, version, options) { element('player-error').hidden = true; return begin(next, version, options); }, attachDash, attachHls, fail, loading, reveal, toggleTheater, toggleFullscreen };
 }
