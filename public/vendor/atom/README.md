@@ -46,3 +46,7 @@ Additional Watch compatibility behavior:
 - Watch CSS disables pointer events on decorative loading/error descendants;
   Atom's generic layer-child rule otherwise makes the center spinner eat clicks.
 - Native volume changes refresh Atom's mute icon, including silent autoplay.
+- Progress dragging sends `seek-start` and `seek-cancel` lifecycle notifications.
+  Native timeline updates do not overwrite the drag preview; pointer capture
+  preserves release handling outside the progress bar. A committed seek updates
+  the local position immediately while Watch waits for room confirmation.

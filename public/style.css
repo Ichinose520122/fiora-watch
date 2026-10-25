@@ -2280,6 +2280,8 @@ body.player-fullscreen {
 .player-shell.web-fullscreen .screen {
   width: 100%;
   height: 100%;
+  max-height: none;
+  flex: 1 1 auto;
   aspect-ratio: auto;
   border: 0;
   border-radius: 0;

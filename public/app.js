@@ -8,7 +8,7 @@ let room = /^\/room\/([a-f0-9]+)$/.exec(location.pathname)?.[1];
 let state; let receivedAt = 0; let currentMedia = ''; let mediaVersion = -1; let hls; let dash; let enabled = true; let events; let applying = false; let controlBusy = false; let episodeBusy = false; let episodeSignature = '';
 let chatBusy = false; let sending = false; let lastMessages = ''; let pendingSend; let scrollAfterSend = false; let noticeTimer;
 let sourceGeneration = 0; let fallbackUsed = false; let activeSource = ''; let activeDelivery = ''; let playAttempt = 0; let locallySeeking = false;
-let seekTimer;
+let seekTimer; let seekSequence = 0; let seekDragging = false;
 let autoplayBlocked = false; let autoMuted = false;
 let pendingSeek = false; let queuedPlayback; let inflightPlayback; let drainingPlayback = false;
 const atomShell = mountAtomPlayer({ requestControl: requestPlayerControl });
@@ -35,7 +35,7 @@ function attempt(task) { return Promise.resolve().then(task).catch(error => noti
 function target() { return state ? state.position + (state.paused ? 0 : Math.max(0, (state.serverTime - state.updatedAt) / 1000 + (performance.now() - receivedAt) / 1000)) : 0; }
 function playbackStatus() {
   const mode = activeDelivery === 'direct' ? '直连' : activeDelivery === 'proxy' ? '服务器中继' : '';
-  $('playback-status').textContent = [!state?.media ? '等待选择影片' : state.canControl ? '与你同步' : '跟随房间播放', mode].filter(Boolean).join(' · ');
+  $('playback-status').textContent = [!state?.media ? '等待选择影片' : state.canControl ? '房间同步播放' : '跟随房间播放', mode].filter(Boolean).join(' · ');
   $('delivery-status').textContent = mode; $('delivery-status').hidden = !mode;
 }
 function synchronize({ forceSeek = false } = {}) {
@@ -67,7 +67,7 @@ async function playLocal({ manual = false } = {}) {
 function loadMedia(source, { preserve = false } = {}) {
   const generation = ++sourceGeneration; activeSource = source; playAttempt += 1; applying = false;
   pendingSeek = Boolean(source); if (!preserve) queuedPlayback = undefined;
-  clearTimeout(seekTimer); locallySeeking = false; danmaku.clear(); atomShell.reset();
+  clearTimeout(seekTimer); seekSequence += 1; seekDragging = false; locallySeeking = false; danmaku.clear(); atomShell.reset();
   activeDelivery = !source ? '' : fallbackUsed && source === state?.media?.fallbackUrl ? 'proxy' : state?.media?.playbackMode || ''; playbackStatus();
   video.onerror = null; $('seek').value = String(Math.max(0, target()));
   hls?.destroy(); hls = null; dash?.reset(); dash = null; video.pause(); video.removeAttribute('src');
@@ -106,9 +106,12 @@ function receive(next) {
   const pausedSeek = state && next.paused && next.revision > state.revision && next.position !== state.position && next.mediaVersion === state.mediaVersion;
   state = next; receivedAt = performance.now();
   if (!next.canControl || !next.media) queuedPlayback = undefined;
+  if (!next.canControl && locallySeeking) {
+    clearTimeout(seekTimer); seekSequence += 1; seekDragging = false; locallySeeking = false;
+  }
   $('identity').textContent = next.user.name; $('logout').hidden = false;
   $('connection').textContent = next.paused ? '已暂停' : '同步播放中';
-  $('title').textContent = next.media?.title || '等待开场';
+  $('title').textContent = next.media?.title || '尚未选择影片';
   playbackStatus();
   $('back-to-fiora').href = next.fioraUrl;
   $('toggle').textContent = next.paused ? '▶' : 'Ⅱ'; $('toggle').setAttribute('aria-label', next.paused ? '播放' : '暂停');
@@ -172,15 +175,35 @@ function requestPlayerControl(command, position) {
   if (!state?.media || !activeSource || episodeBusy) return;
   if (['toggle', 'play', 'pause'].includes(command)) { queuePlayback(command); return; }
   if (!state.canControl) return;
+  if (command === 'seek-start') {
+    if (video.readyState < 1) return;
+    clearTimeout(seekTimer); seekSequence += 1; seekDragging = true; locallySeeking = true;
+    return;
+  }
+  if (command === 'seek-cancel') {
+    if (seekDragging) { seekDragging = false; locallySeeking = false; synchronize(); }
+    return;
+  }
   if (command === 'seek') {
     if (!Number.isFinite(position) || video.readyState < 1) return;
-    const generation = sourceGeneration;
+    const generation = sourceGeneration; const sequence = ++seekSequence;
     const value = Math.max(0, Math.min(position, Number.isFinite(video.duration) ? video.duration : position));
-    clearTimeout(seekTimer); locallySeeking = true;
+    clearTimeout(seekTimer); seekDragging = false; locallySeeking = true;
+    // Keep the released handle at the user's destination while the room confirms it.
+    video.currentTime = value;
     const commit = () => {
-      if (generation !== sourceGeneration) return;
+      if (generation !== sourceGeneration || sequence !== seekSequence) return;
       if (controlBusy) { seekTimer = setTimeout(commit, 100); return; }
-      attempt(async () => { let success = false; try { success = await action('seek', { position: value }); } finally { locallySeeking = false; synchronize({ forceSeek: success && generation === sourceGeneration }); } });
+      attempt(async () => {
+        let success = false;
+        try { success = await action('seek', { position: value }); }
+        finally {
+          // An earlier response must never release a newer drag or seek.
+          if (generation === sourceGeneration && sequence === seekSequence) {
+            locallySeeking = false; synchronize({ forceSeek: success });
+          }
+        }
+      });
     };
     seekTimer = setTimeout(commit, 100);
     return;
@@ -228,12 +251,9 @@ async function selectEpisode(index) {
   catch (error) { receive(await api('/api/state')); throw error; }
   finally { episodeBusy = false; renderEpisodes(); }
 }
-$('seek').oninput = () => { locallySeeking = true; };
-$('seek').onchange = event => {
-  const position = Number(event.target.value); const generation = sourceGeneration;
-  attempt(async () => { let success = false; try { success = await action('seek', { position }); } finally { locallySeeking = false; synchronize({ forceSeek: success && generation === sourceGeneration }); } });
-};
-$('seek').onblur = () => { locallySeeking = false; synchronize(); };
+$('seek').oninput = () => requestPlayerControl('seek-start');
+$('seek').onchange = event => requestPlayerControl('seek', Number(event.target.value));
+$('seek').onblur = () => requestPlayerControl('seek-cancel');
 $('volume').oninput = event => { video.volume = Number(event.target.value); };
 $('retry-player').onclick = () => { if (state?.media) { notice(''); loadMedia(fallbackUsed ? state.media.fallbackUrl : currentMedia, { preserve: true }); } };
 video.addEventListener('loadedmetadata', synchronize); video.addEventListener('canplay', synchronize);
@@ -243,7 +263,7 @@ function renderMessages(messages) {
   const signature = JSON.stringify(messages); if (signature === lastMessages && !scrollAfterSend) return;
   const list = $('messages'); const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 64;
   const oldScroll = list.scrollTop; lastMessages = signature; list.replaceChildren();
-  if (!messages.length) { const empty = document.createElement('div'); empty.className = 'chat-empty'; empty.textContent = '聊聊正在看的故事吧'; list.append(empty); }
+  if (!messages.length) { const empty = document.createElement('div'); empty.className = 'chat-empty'; empty.textContent = '暂无聊天消息'; list.append(empty); }
   for (const message of messages) {
     const row = document.createElement('div'); row.className = `chat-message${message.user.id === state.user.id ? ' self' : ''}${message.deleted ? ' deleted' : ''}`;
     const avatar = document.createElement('div'); avatar.className = 'avatar'; avatar.textContent = Array.from(message.user.name)[0] || '·';
@@ -283,7 +303,7 @@ $('logout').onclick = () => attempt(async () => { await api('/api/logout', {}); 
 setInterval(() => {
   if (!state) return; synchronize();
   $('time').textContent = `${time(video.currentTime)} / ${time(Number.isFinite(video.duration) ? video.duration : 0)}`;
-  if (Number.isFinite(video.duration)) { $('seek').max = String(video.duration); if (document.activeElement !== $('seek')) $('seek').value = String(video.currentTime); }
+  if (Number.isFinite(video.duration)) { $('seek').max = String(video.duration); if (!locallySeeking && document.activeElement !== $('seek')) $('seek').value = String(video.currentTime); }
 }, 1000);
 setInterval(refreshChat, 2000);
 attempt(async () => {

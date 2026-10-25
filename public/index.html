@@ -30,7 +30,7 @@
     <div class="room-heading">
       <div>
         <span class="eyebrow">FIORA WATCH / CINEMA</span>
-        <h1>一起看<span class="heading-dot">.</span></h1>
+        <h1>放映室</h1>
       </div>
       <span id="connection" class="status-pill">等待加入</span>
     </div>
@@ -50,7 +50,7 @@
                   <path d="M21 18.5 30 24l-9 5.5v-11Z" fill="currentColor"/>
                 </svg>
               </span>
-              <h2>好电影，一起看</h2>
+              <h2>尚未选择影片</h2>
               <a id="choose-source" href="/" target="_blank" rel="noopener">选择影片 ↗</a>
             </div>
             <div id="player-loading" class="player-loading" role="status" hidden>
@@ -116,7 +116,7 @@
         <div class="movie-meta">
           <div class="movie-mark">正在<br>放映</div>
           <div class="movie-meta-body">
-            <h2 id="title">等待开场</h2>
+            <h2 id="title">尚未选择影片</h2>
             <p id="playback-status">等待选择影片</p>
           </div>
         </div>
@@ -133,15 +133,15 @@
       </section>
       <aside class="chat-card" aria-label="聊天">
         <div class="chat-heading">
-          <h2>一起聊聊<span class="chat-dot"></span></h2>
+          <h2>聊天<span class="chat-dot"></span></h2>
           <span id="chat-status">连接中</span>
         </div>
         <div id="messages" class="messages" aria-live="polite">
-          <div class="chat-empty">聊聊正在看的故事吧</div>
+          <div class="chat-empty">暂无聊天消息</div>
         </div>
         <form id="comment-form" class="composer">
           <label class="sr-only" for="comment">发送评论</label>
-          <textarea id="comment" rows="2" maxlength="2048" placeholder="说点什么…" disabled></textarea>
+          <textarea id="comment" rows="2" maxlength="2048" placeholder="输入消息…" disabled></textarea>
           <div class="composer-bottom">
             <a id="back-to-fiora" href="#" target="_blank" rel="noopener">Fiora 聊天 ↗</a>
             <button id="send-comment" type="submit" aria-label="发送评论" disabled>
