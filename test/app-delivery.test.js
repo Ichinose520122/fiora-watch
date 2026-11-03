@@ -46,16 +46,18 @@ function fixture(kind) {
     if (kind === 'hls') { const engine = engines.at(-1); return () => engine.fail(); }
     const callback = video.onerror; return () => { video.error = { code: 4 }; callback(); };
   };
-  return { element, beginnings, failures, engines, select, sourceUrl, errorCallback };
+  return { element, hasElement: id => elements.has(id), beginnings, failures, engines, select, sourceUrl, errorCallback };
 }
 
 for (const kind of ['hls', 'mp4']) {
   test(`${kind}: direct failure falls back once to the same-origin relay and preserves player choices`, async () => {
     const f = fixture(kind); await flush(); f.select(); await flush();
-    assert.equal(f.element('delivery-status').textContent, '直连'); assert.equal(f.beginnings.length, 1);
+    assert.equal(f.hasElement('delivery-status'), false); assert.equal(f.beginnings.length, 1);
     const staleError = f.errorCallback(); staleError(); await flush();
-    assert.equal(f.sourceUrl(), '/api/relay?version=1'); assert.equal(f.element('delivery-status').textContent, '服务器中继');
-    assert.match(f.element('playback-status').textContent, /服务器中继/);
+    assert.equal(f.sourceUrl(), '/api/relay?version=1'); assert.equal(f.hasElement('delivery-status'), false);
+    assert.equal(f.element('playback-status').textContent, '房间同步播放');
+    assert.equal(f.element('notice').textContent, '已自动调整播放方式，正在重新加载…');
+    assert.doesNotMatch([f.element('playback-status').textContent, f.element('notice').textContent].join(' '), /中继|直连|proxy|direct/);
     assert.equal(f.beginnings.length, 2); assert.equal(f.beginnings[0].preserve, false); assert.equal(f.beginnings[1].preserve, true);
     assert.equal(f.beginnings[1].version, f.beginnings[0].version);
     staleError(); assert.equal(f.beginnings.length, 2); assert.equal(f.failures.length, 0);
@@ -67,7 +69,7 @@ for (const kind of ['hls', 'mp4']) {
     const f = fixture(kind); await flush(); f.select({ playbackMode: 'proxy', url: '/api/relay?version=1', fallbackUrl: 'https://cdn.example/direct' }); await flush();
     f.errorCallback()(); await flush();
     assert.equal(f.sourceUrl(), '/api/relay?version=1'); assert.equal(f.beginnings.length, 1); assert.equal(f.failures.length, 1);
-    assert.equal(f.element('delivery-status').textContent, '服务器中继');
+    assert.equal(f.hasElement('delivery-status'), false);
   });
 
   test(`${kind}: errors from a replaced source cannot fail or reroute the new episode`, async () => {
@@ -75,13 +77,17 @@ for (const kind of ['hls', 'mp4']) {
     f.select({}, 2); await flush(); const source = f.sourceUrl(); staleError(); await flush();
     assert.equal(f.sourceUrl(), source); assert.equal(f.sourceUrl(), `https://cdn.example/episode-2.${kind}`);
     assert.equal(f.beginnings.length, 2); assert.equal(f.beginnings[1].preserve, false); assert.equal(f.failures.length, 0);
-    assert.equal(f.element('delivery-status').textContent, '直连'); assert.equal(f.element('notice').textContent, '');
+    assert.equal(f.hasElement('delivery-status'), false); assert.equal(f.element('notice').textContent, '');
   });
 
   test(`${kind}: direct failure refuses a fallback on another origin`, async () => {
     const f = fixture(kind); await flush(); f.select({ fallbackUrl: 'https://outside.example/relay' }); await flush();
     const source = f.sourceUrl(); f.errorCallback()(); await flush();
     assert.equal(f.sourceUrl(), source); assert.equal(f.beginnings.length, 1); assert.equal(f.failures.length, 1);
-    assert.equal(f.element('delivery-status').textContent, '直连');
+    assert.equal(f.hasElement('delivery-status'), false);
   });
 }
+
+test('cinema markup has no delivery badge', () => {
+  assert.doesNotMatch(fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8'), /delivery-status|服务器中继|直连/);
+});

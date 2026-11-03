@@ -127,7 +127,8 @@ test('every online MP4/HLS obeys the selected delivery; local files bypass relay
   const admin = await login(); const viewer = await login(false);
   assert.equal((await call('/api/settings/playback', viewer, { delivery: 'proxy' })).status, 403);
   await call('/api/settings/playback', admin, { delivery: 'proxy' });
-  assert.deepEqual(await (await call('/api/settings/playback', admin)).json(), { delivery: 'proxy', bilibiliDelivery: 'proxy' });
+  const settings = await (await call('/api/settings/playback', admin)).json();
+  assert.equal(settings.delivery, 'proxy'); assert.equal(settings.bilibiliDelivery, 'proxy');
   await call('/api/media', admin, { mode: 'online', url: 'https://cdn.example.com/movie.mp4?secret=hidden', revision: 0 });
   let state = await (await call('/api/state', viewer)).json(); const old = state.media.url;
   assert.equal(state.media.playbackMode, 'proxy'); assert.match(old, /^\/api\/media\/relay/); assert.doesNotMatch(JSON.stringify(state), /secret=hidden/);

@@ -9,6 +9,83 @@ import { createApp } from '../src/server.js';
 import { signTicket } from '../src/auth.js';
 
 const room = 'b'.repeat(24);
+
+test('per-provider cache settings validate, persist and require administrator origin checks', async t => {
+  const { call, login, config } = await fixture(t);
+  const admin = await login(true); const viewer = await login(false);
+  const initial = await (await call('/api/settings/playback', admin)).json();
+  assert.equal(initial.relayCache.bilibili.maxGiB, 1);
+  assert.equal(initial.relayCache.girigiri.maxGiB, 2);
+  const update = { relayCache: { bilibili: { enabled: false, maxGiB: 0.5, ttlHours: 2 }, girigiri: { enabled: true, maxGiB: 3, ttlHours: 12 } } };
+  assert.equal((await call('/api/settings/playback', viewer, update)).status, 403);
+  assert.equal((await call('/api/settings/playback', admin, update, { Origin: 'https://evil.example' })).status, 403);
+  assert.equal((await call('/api/settings/playback', admin, update)).status, 200);
+  const persisted = JSON.parse(fs.readFileSync(path.join(config.dataDir, 'state.json'))).settings;
+  assert.deepEqual(persisted.relayCache, update.relayCache);
+  for (const bad of [{ bilibili: { maxGiB: 0 } }, { girigiri: { ttlHours: 169 } }, { bilibili: { enabled: 'yes' } }, { other: {} }]) {
+    assert.equal((await call('/api/settings/playback', admin, { relayCache: bad })).status, 400);
+  }
+  await call('/api/settings/playback', admin, { delivery: 'proxy' });
+  const result = await (await call('/api/settings/playback', admin)).json();
+  assert.deepEqual(result.relayCache, update.relayCache);
+  assert.equal(result.delivery, 'proxy');
+});
+
+test('Bilibili caches exact ranges behind room authentication and bypasses immediately when disabled', async t => {
+  let reads = 0;
+  const { call, login } = await fixture(t, { requestTrack: async (_track, range) => {
+    reads++; const start = Number(range.slice(6).split('-')[0]);
+    const response = Readable.from(['data']); response.statusCode = 206;
+    response.headers = { 'content-length': '4', 'content-range': `bytes ${start}-${start + 3}/100`, 'content-type': 'video/mp4' };
+    return { response };
+  } });
+  const admin = await login(true);
+  await call('/api/media', admin, { mode: 'online', url: media.source, revision: 0 });
+  const url = `/api/bilibili/track?room=${room}&version=1&track=0&delivery=proxy`;
+  for (let i = 0; i < 2; i++) {
+    const response = await call(url, admin, undefined, { Range: 'bytes=0-3' });
+    assert.equal(response.status, 206); assert.equal(response.headers.get('content-range'), 'bytes 0-3/100'); assert.equal(await response.text(), 'data');
+  }
+  assert.equal(reads, 1);
+  assert.equal((await call(url, '')).status, 401);
+  assert.equal((await call(url.replace('version=1', 'version=0'), admin)).status, 404);
+  assert.equal((await call(url, admin, undefined, { Range: 'bytes=3-0' })).status, 400);
+  assert.equal(reads, 1);
+  await (await call(url, admin, undefined, { Range: 'bytes=4-7' })).text(); assert.equal(reads, 2);
+  let settings = await (await call('/api/settings/playback', admin)).json();
+  assert.equal(settings.cacheUsage.bilibili.bytes, 8); assert.equal(settings.cacheUsage.girigiri.bytes, 0);
+  await call('/api/settings/playback', admin, { relayCache: { bilibili: { enabled: false } } });
+  settings = await (await call('/api/settings/playback', admin)).json(); assert.equal(settings.cacheUsage.bilibili.bytes, 0);
+  await (await call(url, admin, undefined, { Range: 'bytes=0-3' })).text(); assert.equal(reads, 3);
+});
+
+test('Girigiri caches video segments, refreshes manifests and keeps its switch independent', async t => {
+  const selected = { source: 'https://ani.girigirilove.com/play/12', kind: 'hls', title: 'Episode', url: 'https://cdn.example.com/main.m3u8' };
+  let manifests = 0; let segments = 0;
+  const { call, login } = await fixture(t, { resolve: async () => structuredClone(selected), requestMedia: async url => {
+    const manifest = url.endsWith('.m3u8'); manifest ? manifests++ : segments++;
+    const data = manifest ? '#EXTM3U\n#EXTINF:5,\npart.ts\n#EXT-X-ENDLIST\n' : 'segment';
+    const response = Readable.from([Buffer.from(data)]); response.statusCode = 200;
+    response.headers = { 'content-length': String(Buffer.byteLength(data)), 'content-type': manifest ? 'application/vnd.apple.mpegurl' : 'video/mp2t' };
+    return { response, url };
+  } });
+  const admin = await login(true);
+  await call('/api/settings/playback', admin, { delivery: 'proxy', relayCache: { bilibili: { enabled: false } } });
+  await call('/api/media', admin, { mode: 'online', url: selected.source, revision: 0 });
+  const state = await (await call('/api/state', admin)).json();
+  const playlist = await (await call(state.media.url, admin)).text();
+  await (await call(state.media.url, admin)).text(); assert.equal(manifests, 2);
+  const segment = playlist.split('\n').find(line => line.startsWith('/api/'));
+  assert.ok(segment);
+  assert.equal(await (await call(segment, admin)).text(), 'segment');
+  assert.equal(await (await call(segment, admin)).text(), 'segment'); assert.equal(segments, 1);
+  const settings = await (await call('/api/settings/playback', admin)).json();
+  assert.equal(settings.cacheUsage.girigiri.bytes, 7); assert.equal(settings.cacheUsage.bilibili.bytes, 0);
+  await call('/api/settings/playback', admin, { relayCache: { girigiri: { enabled: false } } });
+  await (await call(segment, admin)).text(); assert.equal(segments, 2);
+  await call('/api/media', admin, { mode: 'clear', revision: 1 });
+  assert.equal((await call(segment, admin)).status, 404);
+});
 const media = { source: 'https://www.bilibili.com/video/BV1v2Ht6cERH/', kind: 'dash', title: 'Video', bilibili: { bvid: 'BV1v2Ht6cERH', cid: 42493413237, duration: 87, tracks: ['video', 'audio'].map(type => ({ id: `${type}-0`, type, quality: 80, url: `https://example.bilivideo.com/${type}.m4s?secret=private`, mimeType: `${type}/mp4`, codecs: type === 'video' ? 'avc1.64001E' : 'mp4a.40.2', bandwidth: 100000, width: 1080, height: 1920, initialization: '0-99', indexRange: '100-199' })) } };
 async function fixture(t, overrides = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-playback-'));
@@ -22,7 +99,7 @@ async function fixture(t, overrides = {}) {
     ...overrides,
   });
   const server = instance.app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
-  t.after(async () => { instance.close(); await new Promise(resolve => server.close(resolve)); fs.rmSync(dataDir, { recursive: true, force: true }); });
+  t.after(async () => { await instance.close(); await new Promise(resolve => server.close(resolve)); fs.rmSync(dataDir, { recursive: true, force: true }); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const call = (url, cookie, body, headers = {}) => fetch(base + url, { redirect: 'manual', method: body === undefined ? 'GET' : 'POST', headers: { Origin: config.audience, 'X-Watch-Request': '1', 'X-Watch-Room': room, 'Content-Type': 'application/json', Cookie: cookie || '', ...headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const login = async admin => {
@@ -93,4 +170,24 @@ test('slow subtitle responses cannot escape after a media switch', async t => {
   const pending = call(`/api/bilibili/subtitles?room=${room}&version=1`, cookie); await ready;
   await call('/api/media', cookie, { mode: 'clear', revision: 1 });
   release({ status: 'none', subtitles: [] }); assert.equal((await pending).status, 409);
+});
+
+test('ending and replay synchronize room position while retaining controller and version checks', async t => {
+  const { call, login } = await fixture(t); const owner = await login(true); const viewer = await login(false);
+  await call('/api/media', owner, { mode: 'online', url: media.source, revision: 0 });
+  assert.equal((await call('/api/control', viewer, { action: 'ended', position: 87, revision: 1, mediaVersion: 1 })).status, 403);
+  assert.equal((await call('/api/control', owner, { action: 'ended', position: 87, revision: 1, mediaVersion: 1 })).status, 200);
+  let state = await (await call('/api/state', viewer)).json();
+  assert.equal(state.ended, true); assert.equal(state.paused, true); assert.equal(state.position, 87);
+  assert.equal((await call('/api/control', viewer, { action: 'play', restart: true, revision: 2, mediaVersion: 1 })).status, 403);
+  assert.equal((await call('/api/control', owner, { action: 'play', revision: 2, mediaVersion: 1 })).status, 200);
+  state = await (await call('/api/state', viewer)).json();
+  assert.equal(state.ended, false); assert.equal(state.paused, false); assert.equal(state.position, 0); assert.equal(state.revision, 3);
+  assert.equal((await call('/api/control', owner, { action: 'ended', position: 87, revision: 2, mediaVersion: 1 })).status, 400);
+  assert.equal((await call('/api/control', owner, { action: 'play', restart: true, revision: 3, mediaVersion: 0 })).status, 400);
+  state = await (await call('/api/state', viewer)).json(); assert.equal(state.revision, 3); assert.equal(state.paused, false);
+  await call('/api/control', owner, { action: 'ended', position: 87, revision: 3, mediaVersion: 1 });
+  await call('/api/media', owner, { mode: 'online', url: media.source, revision: 4 });
+  state = await (await call('/api/state', viewer)).json();
+  assert.equal(state.ended, false); assert.equal(state.position, 0); assert.equal(state.mediaVersion, 5);
 });

@@ -8,7 +8,7 @@ import { resolveMedia } from './resolver.js';
 import { loadConfig } from './config.js';
 import { createChatBridge } from './chat.js';
 import { createCatalog } from './catalog.js';
-import { isBilibiliUrl, listBilibiliEpisodes, resolveBilibili, buildBilibiliManifest, requestBilibiliTrack, authenticatedBilibiliReader, mediaUrl } from './bilibili.js';
+import { isBilibiliUrl, listBilibiliEpisodes, resolveBilibili, buildBilibiliManifest, requestBilibiliTrack, authenticatedBilibiliReader, mediaUrl, validateByteRange } from './bilibili.js';
 import { listBilibiliSubtitles, fetchBilibiliSubtitle } from './bilibili-subtitles.js';
 import { BilibiliAccount } from './bilibili-account.js';
 import QRCode from 'qrcode';
@@ -16,6 +16,8 @@ import { pipeline } from 'node:stream/promises';
 import { publicAssets } from './assets.js';
 import { MediaRelay } from './relay.js';
 import { registerLibraryRoutes } from './library-api.js';
+import { RelayCache } from './relay-cache.js';
+import { cacheSettings, updateCacheSettings, cachePolicies, cacheProvider } from './cache-settings.js';
 
 export const SESSION_MS = 180 * 60000;
 
@@ -38,9 +40,10 @@ export function createApp(config, dependencies = {}) {
   let subtitleCache = new WeakMap();
   const relay = new MediaRelay(config.hosts, dependencies.requestMedia);
   const relayStreams = new Set();
+  const relayCache = new RelayCache({ directory: path.join(config.dataDir, 'relay-cache'), settings: () => cachePolicies(store.data.settings?.relayCache) });
   const playbackSettings = () => {
     const delivery = (store.data.settings?.delivery ?? store.data.settings?.bilibiliDelivery) === 'proxy' ? 'proxy' : 'direct';
-    return { delivery, bilibiliDelivery: delivery };
+    return { delivery, bilibiliDelivery: delivery, relayCache: cacheSettings(store.data.settings?.relayCache), cacheUsage: relayCache.stats() };
   };
   const refreshing = new Map();
   const invitationUpdates = new Map();
@@ -86,11 +89,12 @@ export function createApp(config, dependencies = {}) {
   app.use('/api', (req, res, next) => req.method === 'POST' ? sameOrigin(req, res, next) : next());
   const admin = (req, res, next) => req.session.user.admin ? next() : res.status(403).json({ error: '只有站点管理员可以使用此功能' });
   app.get('/api/settings/playback', admin, (_req, res) => res.json(playbackSettings()));
-  app.post('/api/settings/playback', admin, (req, res) => {
-    const delivery = req.body?.delivery ?? req.body?.bilibiliDelivery;
+  app.post('/api/settings/playback', admin, async (req, res) => {
+    const delivery = req.body?.delivery ?? req.body?.bilibiliDelivery ?? playbackSettings().delivery;
     if (!['proxy', 'direct'].includes(delivery)) throw new Error('请选择直连或服务器中继');
-    store.data.settings = { ...store.data.settings, delivery, bilibiliDelivery: delivery };
-    store.save(); res.json(playbackSettings());
+    const settings = req.body?.relayCache === undefined ? cacheSettings(store.data.settings?.relayCache) : updateCacheSettings(store.data.settings?.relayCache, req.body.relayCache);
+    store.data.settings = { ...store.data.settings, delivery, bilibiliDelivery: delivery, relayCache: settings };
+    store.save(); await relayCache.prune(); res.json(playbackSettings());
   });
   app.get('/api/bilibili/account', admin, async (_req, res) => res.json(await account.publicStatus()));
   app.post('/api/bilibili/account/refresh', admin, async (req, res) => {
@@ -164,7 +168,14 @@ export function createApp(config, dependencies = {}) {
     const expiry = setTimeout(() => controller.abort(), Math.max(1, req.grant.expires - Date.now()));
     const abort = () => controller.abort(); res.on('close', abort);
     try {
-      const upstream = await relay.open(resource, req.headers.range, controller.signal);
+      const range = validateByteRange(req.headers.range);
+      const provider = cacheProvider(media);
+      const load = () => relay.open(resource, range, controller.signal);
+      const upstream = provider && req.method === 'GET' && !resource.manifest
+        ? await relayCache.open(provider, JSON.stringify([selection.id, selection.mediaVersion, resource.url, range || '']), load, {
+          signal: controller.signal,
+          cacheable: value => !relay.isManifest(resource, value) && (/^(video|audio)\//i.test(value.response.headers['content-type'] || '') || /\.(ts|m4s|mp4|m4a|aac|webm)(?:[?#]|$)/i.test(resource.url)),
+        }) : await load();
       const response = upstream.response;
       if (req.room.media !== media || req.grant.expires <= Date.now()) { response.destroy(); return res.sendStatus(409); }
       res.set({ 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store, no-transform' });
@@ -233,24 +244,30 @@ export function createApp(config, dependencies = {}) {
       // Browser CORS / source restrictions may require the player's proxy fallback.
       return res.redirect(302, mediaUrl(media.bilibili.tracks[index].url));
     }
+    if (relayStreams.size >= 256 || [...relayStreams].filter(active => active.room === req.room.id).length >= 24) return res.status(503).json({ error: '播放请求过多，请稍后重试' });
     const controller = new AbortController();
+    const active = { room: req.room.id, session: req.session, grant: req.grant, controller }; relayStreams.add(active);
     const expiry = setTimeout(() => controller.abort(), Math.max(1, req.grant.expires - Date.now()));
-    res.on('close', () => controller.abort());
+    const abort = () => controller.abort(); res.on('close', abort);
     try {
-      let upstream;
-      try { upstream = await requestTrack(media.bilibili.tracks[index], req.headers.range, controller.signal); }
-      catch (error) {
-        // Refresh expired CDN links, retaining exactly the same DASH representations.
-        if (!/HTTP (403|410)/.test(error.message)) throw error;
-        const key = `${req.room.id}:${req.query.version}`;
-        if (!refreshing.has(key)) refreshing.set(key, resolveBili(media.source).finally(() => refreshing.delete(key)));
-        const renewed = await refreshing.get(key);
-        if (req.room.media !== media) return res.sendStatus(409);
-        const replacements = media.bilibili.tracks.map(old => renewed.bilibili.tracks.find(track => track.id === old.id && track.codecs === old.codecs && track.bandwidth === old.bandwidth && track.initialization === old.initialization && track.indexRange === old.indexRange));
-        if (replacements.some(track => !track)) throw new Error('B站片源已改变，请重新选择当前分P');
-        media.bilibili.tracks = replacements; store.save();
-        upstream = await requestTrack(media.bilibili.tracks[index], req.headers.range, controller.signal);
-      }
+      const range = validateByteRange(req.headers.range);
+      const trackUrl = mediaUrl(media.bilibili.tracks[index].url);
+      const load = async () => {
+        try { return await requestTrack(media.bilibili.tracks[index], range, controller.signal); }
+        catch (error) {
+          // Refresh expired CDN links, retaining exactly the same DASH representations.
+          if (!/HTTP (403|410)/.test(error.message)) throw error;
+          const key = `${req.room.id}:${req.query.version}`;
+          if (!refreshing.has(key)) refreshing.set(key, resolveBili(media.source).finally(() => refreshing.delete(key)));
+          const renewed = await refreshing.get(key);
+          if (req.room.media !== media) throw new Error('影片已切换，请刷新播放页');
+          const replacements = media.bilibili.tracks.map(old => renewed.bilibili.tracks.find(track => track.id === old.id && track.codecs === old.codecs && track.bandwidth === old.bandwidth && track.initialization === old.initialization && track.indexRange === old.indexRange));
+          if (replacements.some(track => !track)) throw new Error('B站片源已改变，请重新选择当前分P');
+          media.bilibili.tracks = replacements; store.save();
+          return requestTrack(media.bilibili.tracks[index], range, controller.signal);
+        }
+      };
+      const upstream = req.method === 'GET' ? await relayCache.open('bilibili', JSON.stringify([req.room.id, req.room.mediaVersion, trackUrl, range || '']), load, { signal: controller.signal }) : await load();
       if (req.grant.expires <= Date.now() || req.room.media !== media) { upstream.response.destroy(); return res.sendStatus(403); }
       const response = upstream.response;
       res.status(response.statusCode).type(media.bilibili.tracks[index].mimeType);
@@ -261,7 +278,7 @@ export function createApp(config, dependencies = {}) {
       if (response.statusCode === 416 || req.method === 'HEAD') { response.destroy(); if (response.statusCode === 416) res.set('Content-Length', '0'); return res.end(); }
       await pipeline(response, res);
     } catch (error) { if (!res.headersSent && !res.destroyed) next(error); else res.destroy(); }
-    finally { clearTimeout(expiry); }
+    finally { relayStreams.delete(active); clearTimeout(expiry); res.off('close', abort); controller.abort(); }
   });
   app.get('/api/chat', roomAccess, async (req, res) => {
     throttle(`read:${req.session.user.id}`, 120);
@@ -302,7 +319,7 @@ export function createApp(config, dependencies = {}) {
     if (req.grant.expires <= Date.now() || revision !== req.room.revision) throw new Error('房间状态已改变，请刷新后重新选择');
     if (media && req.body.mode === 'online') media.playbackMode = playbackSettings().delivery;
     for (const active of relayStreams) if (active.room === req.room.id) active.controller.abort();
-    Object.assign(req.room, { media, mediaVersion: req.room.revision + 1, paused: !media, position: 0, updatedAt: Date.now(), revision: req.room.revision + 1 });
+    Object.assign(req.room, { media, mediaVersion: req.room.revision + 1, paused: !media, ended: false, position: 0, updatedAt: Date.now(), revision: req.room.revision + 1 });
     store.save(); publish(req.room);
     // Serialize cover/title changes so a slow earlier choice cannot overwrite a newer card.
     const selected = media;
@@ -358,7 +375,7 @@ export function createApp(config, dependencies = {}) {
     for (const [key, value] of limits) if (value.since < now - 60000) limits.delete(key);
   }, 5000);
   timer.unref();
-  return { app, store, library, close: () => { clearInterval(timer); library.abort?.abort(); for (const stream of streams) stream.res.end(); for (const active of relayStreams) active.controller.abort(); } };
+  return { app, store, library, close: () => { clearInterval(timer); library.abort?.abort(); for (const stream of streams) stream.res.end(); for (const active of relayStreams) active.controller.abort(); return relayCache.close(); } };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

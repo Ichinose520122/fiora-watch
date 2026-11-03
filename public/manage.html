@@ -139,10 +139,29 @@
                   <option value="direct">浏览器直连</option>
                   <option value="proxy">服务器中继</option>
                 </select>
-                <button id="save-playback-settings" class="primary">保存</button>
               </div>
+              <p class="field-note">播放方式适用于所有在线片源，下次选片生效。</p>
+              <fieldset class="relay-cache-settings">
+                <legend>Bilibili 缓存</legend>
+                <label><input id="cache-bilibili-enabled" type="checkbox" checked> 启用服务器缓存</label>
+                <label for="cache-bilibili-capacity">容量上限（GiB）</label>
+                <input id="cache-bilibili-capacity" type="number" min="0.1" max="100" step="0.1" value="1" required>
+                <label for="cache-bilibili-retention">保留时间（小时）</label>
+                <input id="cache-bilibili-retention" type="number" min="1" max="168" step="1" value="6" required>
+                <p id="cache-bilibili-usage" class="field-note" role="status"></p>
+              </fieldset>
+              <fieldset class="relay-cache-settings">
+                <legend>Giligili（Girigirilove）缓存</legend>
+                <label><input id="cache-girigiri-enabled" type="checkbox" checked> 启用服务器缓存</label>
+                <label for="cache-girigiri-capacity">容量上限（GiB）</label>
+                <input id="cache-girigiri-capacity" type="number" min="0.1" max="100" step="0.1" value="2" required>
+                <label for="cache-girigiri-retention">保留时间（小时）</label>
+                <input id="cache-girigiri-retention" type="number" min="1" max="168" step="1" value="24" required>
+                <p id="cache-girigiri-usage" class="field-note" role="status"></p>
+              </fieldset>
+              <p class="field-note">缓存用于服务器中继播放及自动回退，直连播放不占用服务器缓存。保存后应用于后续请求；关闭会清理对应缓存，缩小容量或保留时间会淘汰超额或过期内容。下载媒体库不受影响。</p>
+              <button id="save-playback-settings" class="primary">保存设置</button>
             </form>
-            <p class="field-note">适用于所有在线片源，下次选片生效。</p>
             <p id="playback-settings-status" role="status"></p>
           </section>
         </section>

@@ -7,7 +7,7 @@ const $ = id => document.getElementById(id);
 let room = /^\/room\/([a-f0-9]+)$/.exec(location.pathname)?.[1];
 let state; let receivedAt = 0; let currentMedia = ''; let mediaVersion = -1; let hls; let dash; let enabled = true; let events; let applying = false; let controlBusy = false; let episodeBusy = false; let episodeSignature = '';
 let chatBusy = false; let sending = false; let lastMessages = ''; let pendingSend; let scrollAfterSend = false; let noticeTimer;
-let sourceGeneration = 0; let fallbackUsed = false; let activeSource = ''; let activeDelivery = ''; let playAttempt = 0; let locallySeeking = false;
+let sourceGeneration = 0; let fallbackUsed = false; let activeSource = ''; let playAttempt = 0; let locallySeeking = false;
 let seekTimer; let seekSequence = 0; let seekDragging = false;
 let autoplayBlocked = false; let autoMuted = false;
 let pendingSeek = false; let queuedPlayback; let inflightPlayback; let drainingPlayback = false;
@@ -34,13 +34,14 @@ async function api(url, body) {
 function attempt(task) { return Promise.resolve().then(task).catch(error => notice(error.message, true)); }
 function target() { return state ? state.position + (state.paused ? 0 : Math.max(0, (state.serverTime - state.updatedAt) / 1000 + (performance.now() - receivedAt) / 1000)) : 0; }
 function playbackStatus() {
-  const mode = activeDelivery === 'direct' ? '直连' : activeDelivery === 'proxy' ? '服务器中继' : '';
-  $('playback-status').textContent = [!state?.media ? '等待选择影片' : state.canControl ? '房间同步播放' : '跟随房间播放', mode].filter(Boolean).join(' · ');
-  $('delivery-status').textContent = mode; $('delivery-status').hidden = !mode;
+  $('playback-status').textContent = !state?.media ? '等待选择影片' : state.canControl ? '房间同步播放' : '跟随房间播放';
 }
+function replayPending() { return [queuedPlayback, inflightPlayback].some(intent => intent?.version === mediaVersion && intent.restart); }
 function synchronize({ forceSeek = false } = {}) {
   if (!state?.media) return;
   if (forceSeek) pendingSeek = true;
+  // An older room snapshot must not seek a requested replay back to the ending.
+  if (replayPending()) return;
   if (state.paused) video.pause();
   if (video.readyState < 1 || locallySeeking) return;
   const goal = Math.min(target(), Number.isFinite(video.duration) ? video.duration : Infinity);
@@ -68,7 +69,7 @@ function loadMedia(source, { preserve = false } = {}) {
   const generation = ++sourceGeneration; activeSource = source; playAttempt += 1; applying = false;
   pendingSeek = Boolean(source); if (!preserve) queuedPlayback = undefined;
   clearTimeout(seekTimer); seekSequence += 1; seekDragging = false; locallySeeking = false; danmaku.clear(); atomShell.reset();
-  activeDelivery = !source ? '' : fallbackUsed && source === state?.media?.fallbackUrl ? 'proxy' : state?.media?.playbackMode || ''; playbackStatus();
+  playbackStatus();
   video.onerror = null; $('seek').value = String(Math.max(0, target()));
   hls?.destroy(); hls = null; dash?.reset(); dash = null; video.pause(); video.removeAttribute('src');
   player.begin(state?.media, mediaVersion, { preserve }); video.load(); $('empty').hidden = !!source;
@@ -77,7 +78,7 @@ function loadMedia(source, { preserve = false } = {}) {
     if (generation !== sourceGeneration || source !== activeSource) return;
     const fallback = state?.media?.fallbackUrl;
     if (!fallbackUsed && state?.media?.playbackMode === 'direct' && fallback && fallback !== source && new URL(fallback, location.origin).origin === location.origin) {
-      fallbackUsed = true; loadMedia(fallback, { preserve: true }); notice('已切换服务器中继'); return;
+      fallbackUsed = true; loadMedia(fallback, { preserve: true }); notice('已自动调整播放方式，正在重新加载…'); return;
     }
     player.fail('影片暂时无法加载，请重试或更换片源。'); notice('影片暂时无法加载，请重试或更换片源。', true);
   };
@@ -103,7 +104,8 @@ function loadMedia(source, { preserve = false } = {}) {
 }
 function receive(next) {
   if (state && next.revision < state.revision) return;
-  const pausedSeek = state && next.paused && next.revision > state.revision && next.position !== state.position && next.mediaVersion === state.mediaVersion;
+  const timelineChanged = state && next.revision > state.revision && next.mediaVersion === state.mediaVersion &&
+    ((next.paused && next.position !== state.position) || next.position < state.position || (state.ended && !next.ended));
   state = next; receivedAt = performance.now();
   if (!next.canControl || !next.media) queuedPlayback = undefined;
   if (!next.canControl && locallySeeking) {
@@ -124,12 +126,12 @@ function receive(next) {
     currentMedia = source; mediaVersion = next.mediaVersion || 0; fallbackUsed = false; notice(''); video.poster = next.media?.cover || '';
     locallySeeking = false; loadMedia(source);
   }
-  synchronize({ forceSeek: Boolean(pausedSeek) });
+  synchronize({ forceSeek: Boolean(timelineChanged) });
 }
 async function action(action, extra = {}) {
   if (controlBusy || !state?.canControl || !state.media || episodeBusy) return false;
   controlBusy = true;
-  try { await api('/api/control', { action, revision: state.revision, ...extra }); receive(await api('/api/state')); return true; }
+  try { await api('/api/control', { action, revision: state.revision, mediaVersion, ...extra }); receive(await api('/api/state')); return true; }
   catch (error) { receive(await api('/api/state')); throw error; }
   finally { controlBusy = false; void drainPlayback(); }
 }
@@ -144,11 +146,12 @@ async function drainPlayback() {
       const intent = queuedPlayback; queuedPlayback = undefined;
       if (intent.version !== mediaVersion || !state?.canControl || !state.media || episodeBusy) continue;
       inflightPlayback = intent;
-      if (intent.paused !== state.paused) await action(intent.paused ? 'pause' : 'play');
+      if (intent.restart || intent.paused !== state.paused) await action(intent.paused ? 'pause' : 'play', intent.restart ? { restart: true } : {});
+      inflightPlayback = undefined;
       synchronize();
     }
   } catch (error) { notice(error.message, true); }
-  finally { inflightPlayback = undefined; drainingPlayback = false; if (queuedPlayback) void drainPlayback(); }
+  finally { inflightPlayback = undefined; drainingPlayback = false; synchronize(); if (queuedPlayback) void drainPlayback(); }
 }
 function queuePlayback(command) {
   if (!state?.media || episodeBusy) return;
@@ -157,8 +160,11 @@ function queuePlayback(command) {
     else notice('当前房间由群主或管理员控制播放');
     return;
   }
-  const paused = command === 'toggle' ? !effectivePaused() : command === 'pause';
-  queuedPlayback = { paused, version: mediaVersion };
+  const finished = Boolean(state.ended || video.ended);
+  const paused = command === 'toggle' ? finished && !replayPending() ? false : !effectivePaused() : command === 'pause';
+  const restart = !paused && (finished || replayPending());
+  queuedPlayback = { paused, restart, version: mediaVersion };
+  if (restart && video.readyState >= 1) video.currentTime = 0;
   if (!paused) void unlock({ start: true });
   void drainPlayback();
 }
@@ -257,7 +263,12 @@ $('seek').onblur = () => requestPlayerControl('seek-cancel');
 $('volume').oninput = event => { video.volume = Number(event.target.value); };
 $('retry-player').onclick = () => { if (state?.media) { notice(''); loadMedia(fallbackUsed ? state.media.fallbackUrl : currentMedia, { preserve: true }); } };
 video.addEventListener('loadedmetadata', synchronize); video.addEventListener('canplay', synchronize);
-video.addEventListener('ended', () => { if (state?.canControl && !state.paused) attempt(() => action('pause')); });
+video.addEventListener('ended', () => {
+  if (!video.ended || !state?.canControl || state.paused || replayPending()) return;
+  // Capture both versions now; a delayed ending must never pause a newer replay.
+  const extra = { position: video.duration, revision: state.revision, mediaVersion };
+  attempt(() => action('ended', extra));
+});
 const decodeText = value => String(value || '').replace(/&(?:lt|gt|amp|quot|#39);/g, entity => ({ '&lt;': '<', '&gt;': '>', '&amp;': '&', '&quot;': '"', '&#39;': "'" })[entity]);
 function renderMessages(messages) {
   const signature = JSON.stringify(messages); if (signature === lastMessages && !scrollAfterSend) return;

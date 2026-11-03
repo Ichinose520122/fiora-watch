@@ -363,17 +363,35 @@ $('bilibili-refresh').onclick = () => attempt(() => loadAccount(true));
 $('bilibili-login').onclick = $('bilibili-retry').onclick = () => attempt(loginAccount);
 $('bilibili-logout').onclick = () => attempt(logoutAccount);
 let settingsBusy = false;
+const cacheProviders = ['bilibili', 'girigiri'];
 async function playbackSettings(save = false) {
   if (settingsBusy || !state?.user.admin) return; settingsBusy = true;
   const delivery = $('playback-delivery') || $('bilibili-delivery');
   $('save-playback-settings').disabled = delivery.disabled = true;
+  const cacheFields = cacheProviders.flatMap(provider => ['enabled', 'capacity', 'retention'].map(field => $(`cache-${provider}-${field}`)));
+  cacheFields.forEach(field => { field.disabled = true; });
   $('playback-settings-status').textContent = save ? '保存中…' : '读取中…';
   try {
-    const result = await api('/api/settings/playback', save ? { delivery: delivery.value } : undefined);
+    const relayCache = Object.fromEntries(cacheProviders.map(provider => [provider, {
+      enabled: $(`cache-${provider}-enabled`).checked,
+      maxGiB: Number($(`cache-${provider}-capacity`).value),
+      ttlHours: Number($(`cache-${provider}-retention`).value),
+    }]));
+    const result = await api('/api/settings/playback', save ? { delivery: delivery.value, relayCache } : undefined);
     delivery.value = (result.delivery ?? result.bilibiliDelivery) === 'proxy' ? 'proxy' : 'direct';
-    $('playback-settings-status').textContent = save ? '已保存，下次选片生效。' : '';
+    for (const provider of cacheProviders) {
+      const settings = result.relayCache?.[provider];
+      if (settings) {
+        $(`cache-${provider}-enabled`).checked = settings.enabled;
+        $(`cache-${provider}-capacity`).value = settings.maxGiB;
+        $(`cache-${provider}-retention`).value = settings.ttlHours;
+      }
+      const usage = result.cacheUsage?.[provider];
+      $(`cache-${provider}-usage`).textContent = usage ? `已缓存 ${bytes(usage.bytes)} · ${usage.entries} 项` : '';
+    }
+    $('playback-settings-status').textContent = save ? '已保存。缓存设置已应用，播放方式在下次选片生效。' : '';
   } catch (error) { $('playback-settings-status').textContent = error.message || '设置暂不可用'; throw error; }
-  finally { settingsBusy = false; $('save-playback-settings').disabled = delivery.disabled = false; }
+  finally { settingsBusy = false; $('save-playback-settings').disabled = delivery.disabled = false; cacheFields.forEach(field => { field.disabled = false; }); }
 }
 $('playback-settings-form').onsubmit = event => { event.preventDefault(); attempt(() => playbackSettings(true)); };
 document.addEventListener('visibilitychange', () => { if (document.hidden) stopQrPolling(); else queueQrPoll(); });

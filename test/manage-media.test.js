@@ -59,3 +59,18 @@ test('playback settings saves the global delivery field and accepts a legacy res
   element('playback-delivery').value = 'direct'; await run('playbackSettings(true)');
   assert.equal(context.calls[0].delivery, 'direct'); assert.equal(element('playback-delivery').value, 'proxy');
 });
+
+test('cache form sends independent provider values and displays returned usage', async () => {
+  const { run, context, element } = fixture(); context.calls = [];
+  context.settings = { delivery: 'proxy', relayCache: { bilibili: { enabled: false, maxGiB: 0.5, ttlHours: 2 }, girigiri: { enabled: true, maxGiB: 3, ttlHours: 12 } }, cacheUsage: { bilibili: { bytes: 0, entries: 0 }, girigiri: { bytes: 1024, entries: 2 } } };
+  run('state = {user:{admin:true}}; api = async (url, body) => { calls.push(body); return settings; }');
+  await run('playbackSettings()');
+  assert.equal(element('cache-bilibili-enabled').checked, false);
+  assert.equal(element('cache-girigiri-enabled').checked, true);
+  assert.match(element('cache-girigiri-usage').textContent, /1.0 KB.*2 项/);
+  element('cache-bilibili-capacity').value = '0.8';
+  await run('playbackSettings(true)');
+  assert.equal(context.calls[1].relayCache.bilibili.maxGiB, 0.8);
+  assert.equal(context.calls[1].relayCache.girigiri.maxGiB, 3);
+  assert.equal(element('cache-bilibili-capacity').disabled, false);
+});

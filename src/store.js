@@ -42,12 +42,16 @@ export function position(room, now = Date.now()) {
 
 export function control(room, input, now = Date.now()) {
   if (input.revision !== room.revision) throw new Error('播放状态已更新，请重试');
+  if (input.mediaVersion !== undefined && input.mediaVersion !== room.mediaVersion) throw new Error('影片已更新，请重试');
   if (!room.media) throw new Error('请先选择视频');
-  if (!['play', 'pause', 'seek'].includes(input.action)) throw new Error('未知播放操作');
-  const nextPosition = input.action === 'seek' ? input.position : position(room, now);
+  if (!['play', 'pause', 'seek', 'ended'].includes(input.action)) throw new Error('未知播放操作');
+  if (input.restart !== undefined && (input.action !== 'play' || typeof input.restart !== 'boolean')) throw new Error('无效重播操作');
+  const restart = input.action === 'play' && (room.ended || input.restart === true);
+  const nextPosition = restart ? 0 : ['seek', 'ended'].includes(input.action) ? input.position : position(room, now);
   if (!Number.isFinite(nextPosition) || nextPosition < 0 || nextPosition > 7 * 86400) throw new Error('无效播放进度');
   room.position = nextPosition;
-  if (input.action !== 'seek') room.paused = input.action === 'pause';
+  if (input.action !== 'seek') room.paused = input.action !== 'play';
+  if (input.action !== 'pause') room.ended = input.action === 'ended';
   room.updatedAt = now;
   room.revision += 1;
 }
