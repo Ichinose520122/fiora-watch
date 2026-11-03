@@ -135,14 +135,35 @@ test('disk creation and disk write errors bypass the cache without breaking play
   const { cache, directory } = await fixture(t);
   await fs.rmdir(directory); await fs.writeFile(directory, 'not a directory');
   assert.equal(await body(await cache.open('bilibili', 'no-disk', () => upstream())), 'hello');
+  assert.equal(cache.stats().bilibili.reservedBytes, 0);
+  assert.equal(cache.reservations.size, 0);
   await fs.unlink(directory); await fs.mkdir(directory);
   const source = new PassThrough(); source.headers = { 'content-length': '5' }; source.statusCode = 200;
   const opened = await cache.open('bilibili', 'disk-write', () => ({ response: source }));
-  const reservation = [...cache.reservations.values()][0];
+  const reservation = cache.reservations.get(JSON.stringify(['bilibili', 'disk-write']));
+  assert.ok(reservation?.handle, 'restored storage admits a new cache writer');
   reservation.handle.write = async () => { throw Object.assign(new Error('disk full'), { code: 'ENOSPC' }); };
   const consuming = body(opened); source.end('hello'); assert.equal(await consuming, 'hello');
   assert.equal(cache.stats().bilibili.entries, 0); assert.equal(cache.stats().bilibili.reservedBytes, 0);
   assert.deepEqual(await fs.readdir(directory), []);
+  assert.equal(await body(await cache.open('bilibili', 'recovered', () => upstream())), 'hello');
+  assert.equal(await body(await cache.open('bilibili', 'recovered', miss)), 'hello');
+});
+
+test('ENOTDIR during cache admission releases the reservation on every platform', async t => {
+  const { cache } = await fixture(t);
+  const notDirectory = () => { throw Object.assign(new Error('not a directory'), { code: 'ENOTDIR' }); };
+  const open = t.mock.method(fs, 'open', notDirectory);
+  const unlink = t.mock.method(fs, 'unlink', notDirectory);
+  try {
+    assert.equal(await body(await cache.open('bilibili', 'blocked', () => upstream())), 'hello');
+    assert.equal(cache.stats().bilibili.reservedBytes, 0);
+    assert.equal(cache.reservations.size, 0);
+  } finally {
+    open.mock.restore(); unlink.mock.restore();
+  }
+  assert.equal(await body(await cache.open('bilibili', 'blocked', () => upstream())), 'hello');
+  assert.equal(await body(await cache.open('bilibili', 'blocked', miss)), 'hello');
 });
 
 test('pruning disabled caches and closing cancels writers while allowing playback to finish', async t => {

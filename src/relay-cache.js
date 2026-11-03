@@ -125,7 +125,9 @@ export class RelayCache {
         await writer.handle?.close().catch(() => {});
         try { await fs.unlink(writer.file); } catch (error) {
           // An undeletable temporary file keeps its reservation until restart.
-          if (error.code !== 'ENOENT') return;
+          // ENOTDIR also means the temporary file cannot exist: a parent
+          // component is a regular file, so there are no disk bytes to reserve.
+          if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') return;
         }
         if (this.reservations.get(id) === writer) this.reservations.delete(id);
       })();
