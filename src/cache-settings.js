@@ -1,6 +1,7 @@
 export const CACHE_DEFAULTS = Object.freeze({
   bilibili: { enabled: true, maxGiB: 1, ttlHours: 6 },
   girigiri: { enabled: true, maxGiB: 2, ttlHours: 24 },
+  online: { enabled: true, maxGiB: 2, ttlHours: 6 },
 });
 
 export function cacheSettings(value = {}) {
@@ -35,5 +36,5 @@ export function cachePolicies(settings) {
 export function cacheProvider(media) {
   if (media?.bilibili) return 'bilibili';
   try { if (/(^|\.)girigirilove\.com$/.test(new URL(media?.source).hostname)) return 'girigiri'; } catch {}
-  return null;
+  return media?.youtubeDash || (['hls', 'mp4'].includes(media?.kind) && /^https?:\/\//i.test(media.url)) ? 'online' : null;
 }

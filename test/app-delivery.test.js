@@ -5,7 +5,7 @@ import vm from 'node:vm';
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function fixture(kind) {
+function fixture(kind, timers = { setTimeout() {}, clearTimeout() {} }) {
   const elements = new Map(); const beginnings = []; const failures = []; const engines = [];
   const element = id => {
     if (!elements.has(id)) elements.set(id, { textContent: '', value: '', hidden: false, classList: { toggle() {} },
@@ -27,7 +27,7 @@ function fixture(kind) {
   const context = vm.createContext({ URL, URLSearchParams, Promise, Hls,
     location: { pathname: '/test', hash: '', origin: 'https://watch.example' }, performance: { now: () => 0 },
     document: { getElementById: element, createElement: () => element('created') },
-    setInterval() {}, setTimeout() {}, clearTimeout() {},
+    setInterval() {}, ...timers,
     mountAtomPlayer: () => ({ video, active: true, atom: {}, setFullscreen() {}, reset() {}, update() {} }),
     createDanmaku: () => ({ clear() {}, ingest() {} }), loadMediaEngine: async () => {},
     createPlayer: () => ({ toggleFullscreen() {}, begin: (media, version, options) => beginnings.push({ media, version, ...options }), attachHls() {}, fail: text => failures.push(text) }),
@@ -36,9 +36,9 @@ function fixture(kind) {
   // real receive -> loadMedia -> engine error path. No playback logic is copied.
   const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '');
   vm.runInContext(source, context);
-  const select = (overrides = {}, version = 1) => {
+  const select = (overrides = {}, version = 1, room = {}) => {
     context.next = { revision: version, mediaVersion: version, position: 42, paused: true, serverTime: 0, updatedAt: 0,
-      user: { name: 'viewer' }, canControl: true, media: { kind, provider: 'girigiri', title: `Episode ${version}`, playbackMode: 'direct', url: `https://cdn.example/episode-${version}.${kind}`, fallbackUrl: `/api/relay?version=${version}`, ...overrides } };
+      user: { name: 'viewer' }, canControl: true, ...room, media: { kind, provider: 'girigiri', title: `Episode ${version}`, playbackMode: 'direct', url: `https://cdn.example/episode-${version}.${kind}`, fallbackUrl: `/api/relay?version=${version}`, ...overrides } };
     vm.runInContext('receive(next)', context);
   };
   const sourceUrl = () => kind === 'hls' ? engines.at(-1).source : video.src;
@@ -48,6 +48,23 @@ function fixture(kind) {
   };
   return { element, hasElement: id => elements.has(id), beginnings, failures, engines, select, sourceUrl, errorCallback };
 }
+
+test('a late viewer can start before metadata and a silent startup stall retries the relay once', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture('mp4', { setTimeout, clearTimeout });
+  f.select({}, 1, { canControl: false, paused: false });
+  await flush();
+  assert.equal(f.element('join').hidden, false);
+  let plays = 0;
+  f.element('video').play = async () => { plays++; };
+  await f.element('join').onclick();
+  assert.equal(plays, 1);
+  t.mock.timers.tick(15000); await flush();
+  assert.equal(f.sourceUrl(), '/api/relay?version=1');
+  t.mock.timers.tick(30000); await flush();
+  assert.equal(f.failures.length, 1);
+  assert.equal(f.beginnings.length, 2);
+});
 
 for (const kind of ['hls', 'mp4']) {
   test(`${kind}: direct failure falls back once to the same-origin relay and preserves player choices`, async () => {

@@ -2,10 +2,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Transform } from 'node:stream';
+import { CACHE_DEFAULTS } from './cache-settings.js';
 
 export const RELAY_CACHE_MAX_ENTRY_BYTES = 64 * 1024 * 1024;
 export const RELAY_CACHE_MAX_ENTRIES = 4096;
-const PROVIDERS = ['bilibili', 'girigiri'];
+const PROVIDERS = Object.keys(CACHE_DEFAULTS);
 const OWN_FILE = /^relay-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:tmp|cache)$/;
 
 function validRange(response, size) {
@@ -80,7 +81,18 @@ export class RelayCache {
     }
   }
   async prune() { await this.ready; return this.locked(() => this.pruneLocked()); }
-  async open(provider, key, loadUpstream, { signal, cacheable = () => true } = {}) {
+  async warm(provider, key, load, options) {
+    const id = JSON.stringify([provider, key]);
+    const policy = this.policy(provider);
+    if (!this.available || this.closed || !policy.enabled) return false;
+    const entry = this.entries.get(id);
+    if ((entry && this.now() - entry.created < policy.ttlMs) || this.reservations.has(id)) return true;
+    const result = await this.open(provider, key, load, { ...options, background: true });
+    if (!result.recording || result.cached) { result.response.destroy(); return !!result.cached; }
+    for await (const chunk of result.response) { options.signal.throwIfAborted(); }
+    return this.entries.has(id);
+  }
+  async open(provider, key, loadUpstream, { signal, cacheable = () => true, background = false } = {}) {
     await this.ready;
     signal?.throwIfAborted();
     const id = JSON.stringify([provider, key]);
@@ -137,6 +149,8 @@ export class RelayCache {
       await this.pruneLocked();
       const current = this.policy(provider);
       if (this.closed || this.reservations.has(id) || this.entries.has(id) || !current.enabled || !current.ttlMs || size > current.maxBytes) return false;
+      // Speculative traffic must not evict data already stored for viewers.
+      if (background && (this.usage(provider).bytes + this.usage(provider).reservedBytes + size > current.maxBytes || this.slots(provider) >= RELAY_CACHE_MAX_ENTRIES)) return false;
       for (const [oldId, entry] of [...this.entries].filter(([, entry]) => entry.provider === provider).sort((a, b) => a[1].used - b[1].used)) {
         if (this.usage(provider).bytes + this.usage(provider).reservedBytes + size <= current.maxBytes && this.slots(provider) < RELAY_CACHE_MAX_ENTRIES) break;
         await this.remove(oldId, entry);
@@ -225,7 +239,7 @@ export class RelayCache {
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
     else source.pipe(response);
-    return { ...upstream, response };
+    return { ...upstream, response, recording: true };
   }
   async close() {
     this.closed = true; clearInterval(this.timer); await this.ready;

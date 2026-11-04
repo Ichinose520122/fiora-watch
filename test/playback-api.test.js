@@ -7,8 +7,154 @@ import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { createApp } from '../src/server.js';
 import { signTicket } from '../src/auth.js';
+import { socialSource } from '../src/social.js';
 
 const room = 'b'.repeat(24);
+
+test('HLS warms later segments for active viewers, serves them from disk and stops at five minutes', async t => {
+  const selected = { source: 'https://cdn.example.com/example', kind: 'hls', title: 'Example', url: 'https://cdn.example.com/movie.m3u8' };
+  const reads = new Map();
+  const { call, login } = await fixture(t, {
+    resolve: async () => selected,
+    requestMedia: async url => {
+      reads.set(url, (reads.get(url) || 0) + 1);
+      const manifest = url.endsWith('.m3u8');
+      const data = manifest ? '#EXTM3U\n' + Array.from({ length: 8 }, (_, i) => '#EXTINF:61,\n' + i + '.ts\n').join('') + '#EXT-X-ENDLIST' : 'segment';
+      const response = Readable.from([Buffer.from(data)]);
+      response.statusCode = 200;
+      response.headers = { 'content-length': String(Buffer.byteLength(data)), 'content-type': manifest ? 'application/vnd.apple.mpegurl' : 'video/mp2t' };
+      return { url, response };
+    },
+  });
+  const admin = await login(true);
+  await call('/api/settings/playback', admin, { delivery: 'proxy' });
+  await call('/api/media', admin, { mode: 'online', url: selected.source, revision: 0 });
+  const events = await call('/api/events', admin);
+  try {
+    const state = await (await call('/api/state', admin)).json();
+    const manifest = await (await call(state.media.url, admin)).text();
+    const paths = manifest.split('\n').filter(line => line.startsWith('/api/'));
+    assert.equal(await (await call(paths[0], admin)).text(), 'segment');
+    await waitForCached(call, admin, 'online', 5);
+    for (let n = 0; n < 5; n++) assert.equal(reads.get('https://cdn.example.com/' + n + '.ts'), 1);
+    assert.equal(reads.has('https://cdn.example.com/5.ts'), false);
+    assert.equal(await (await call(paths[3], admin)).text(), 'segment');
+    assert.equal(reads.get('https://cdn.example.com/3.ts'), 1);
+    await call('/api/settings/playback', admin, { prefetch: false });
+    await call('/api/control', admin, { action: 'seek', position: 305, revision: 1 });
+    await (await call(paths[5], admin)).arrayBuffer();
+    await new Promise(resolve => setTimeout(resolve, 250));
+    assert.equal(reads.has('https://cdn.example.com/6.ts'), false);
+  } finally { await events.body.cancel(); }
+});
+
+test('MP4 preserves open-ended responses and warms subsequent finite ranges', async t => {
+  const url = 'https://cdn.example.com/movie.mp4';
+  const file = Buffer.alloc(131072, 42);
+  const reads = [];
+  const { call, login } = await fixture(t, {
+    resolve: async () => ({ source: url, url, kind: 'mp4', title: 'Movie' }),
+    requestMedia: async (_url, _hosts, _signal, options) => {
+      const range = options.headers.Range;
+      reads.push(range);
+      const [, first, last] = /^bytes=(\d+)-(\d*)$/.exec(range);
+      const start = Number(first), end = last ? Number(last) : file.length - 1;
+      const response = Readable.from([file.subarray(start, end + 1)]);
+      response.statusCode = 206;
+      response.headers = { 'content-length': String(end - start + 1), 'content-type': 'video/mp4', 'content-range': 'bytes ' + start + '-' + end + '/' + file.length };
+      return { url, response };
+    },
+  });
+  const admin = await login(true);
+  await call('/api/settings/playback', admin, { delivery: 'proxy' });
+  await call('/api/media', admin, { mode: 'online', url, revision: 0 });
+  const events = await call('/api/events', admin);
+  try {
+    const { media } = await (await call('/api/state', admin)).json();
+    const read = range => call(media.url, admin, undefined, { Range: range });
+    const open = await read('bytes=65536-');
+    assert.equal(open.status, 206);
+    assert.equal(open.headers.get('content-range'), 'bytes 65536-131071/131072');
+    assert.deepEqual(Buffer.from(await open.arrayBuffer()), file.subarray(65536));
+    assert.deepEqual(reads, ['bytes=65536-']);
+    await (await read('bytes=0-32767')).arrayBuffer();
+    await waitForCached(call, admin, 'online', 5);
+    assert.deepEqual(reads.slice(1), ['bytes=0-32767', 'bytes=32768-65535', 'bytes=65536-98303', 'bytes=98304-131071']);
+    assert.deepEqual(Buffer.from(await (await read('bytes=32768-65535')).arrayBuffer()), file.subarray(32768, 65536));
+    assert.equal(reads.length, 5);
+  } finally { await events.body.cancel(); }
+});
+
+async function waitForCached(call, admin, provider, count) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const settings = await (await call('/api/settings/playback', admin)).json();
+    if (settings.cacheUsage[provider].entries >= count) return;
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.fail('Speculative data did not reach the disk cache');
+}
+
+for (const provider of ['youtube', 'bilibili']) {
+  test(provider + ' DASH warms the exact upcoming ranges of both selected tracks', async t => {
+    const index = Buffer.alloc(68);
+    index.writeUInt32BE(index.length); index.write('sidx', 4); index.writeUInt32BE(1, 16); index.writeUInt16BE(3, 30);
+    for (let i = 32; i < index.length; i += 12) { index.writeUInt32BE(16, i); index.writeUInt32BE(120, i + 4); }
+    const reads = [];
+    const get = (url, range) => {
+      reads.push([url, range]);
+      const data = range === 'bytes=0-67' ? index : Buffer.alloc(16, 42);
+      const response = Readable.from([data]); response.statusCode = 206;
+      response.headers = { 'content-range': range.replace('=', ' ') + '/116', 'content-length': String(data.length), 'content-type': 'video/mp4' };
+      return { response, url };
+    };
+    const tracks = media.bilibili.tracks.map(track => ({ ...track, url: 'https://r.googlevideo.com/' + track.type }));
+    const { call, login } = await fixture(t, { resolve: async () => provider === 'youtube'
+      ? { title: 'test', provider, kind: 'dash', youtubeDash: { duration: 360, tracks } } : structuredClone(media),
+      requestTrack: async (track, range) => get(track.url, range),
+      requestMedia: async (url, _hosts, _signal, options) => get(url, options.headers.Range) });
+    const admin = await login(true);
+    await call('/api/settings/playback', admin, { delivery: 'proxy' });
+    await call('/api/media', admin, { mode: 'online', revision: 0, url: 'fixture' });
+    const events = await call('/api/events', admin);
+    try {
+      const state = await (await call('/api/state', admin)).json();
+      const manifest = await (await call(state.media.url, admin)).text();
+      const paths = [...manifest.matchAll(/<BaseURL>(.*?)<\/BaseURL>/g)].map(m => m[1].replaceAll('&amp;', '&'));
+      assert.equal(paths.length, 2);
+      for (const url of paths) for (const range of ['bytes=0-67', 'bytes=68-83']) {
+        assert.equal((await (await call(url, admin, undefined, { Range: range })).arrayBuffer()).byteLength, range === 'bytes=0-67' ? 68 : 16);
+      }
+      await waitForCached(call, admin, provider === 'youtube' ? 'online' : provider, 8);
+      assert.equal(reads.length, 8);
+      for (const url of paths) await (await call(url, admin, undefined, { Range: 'bytes=84-99' })).arrayBuffer();
+      assert.equal(reads.length, 8);
+    } finally { await events.body.cancel(); }
+  });
+}
+
+test('a room remembers YouTube delivery per video across selections and alternate links', async t => {
+  const { call, login } = await fixture(t, { resolve: async url => ({
+    ...socialSource(url), kind: 'mp4', url: 'https://r.googlevideo.com/movie.mp4', title: 'Test',
+  }) });
+  const owner = await login(true), viewer = await login(false);
+  let revision = 0;
+  async function choose(url, youtubeDelivery) {
+    const response = await call('/api/media', owner, { mode: 'online', url, youtubeDelivery, revision });
+    assert.equal(response.status, 200);
+    const state = await (await call('/api/state', viewer)).json();
+    revision = state.revision;
+    return state.media;
+  }
+  const a = 'https://youtu.be/jNQXAC9IVRw', b = 'https://youtu.be/aqz-KE-bKQ0';
+  assert.match((await choose(a, 'proxy')).url, /^\/api\/media\/relay/);
+  assert.equal((await choose(b, 'direct')).playbackMode, 'direct');
+  await call('/api/settings/playback', owner, { delivery: 'proxy' });
+  assert.equal((await choose(b)).playbackMode, 'direct');
+  await call('/api/settings/playback', owner, { delivery: 'direct' });
+  assert.equal((await choose('https://www.youtube.com/watch?v=jNQXAC9IVRw')).playbackMode, 'proxy');
+  assert.equal((await choose(a, 'default')).playbackMode, 'direct');
+});
 
 test('YouTube DASH keeps tracks scoped to the room, media revision and selected delivery', async t => {
   const youtubeDash = { duration: 120, tracks: [
@@ -58,13 +204,13 @@ test('per-provider cache settings validate, persist and require administrator or
   assert.equal((await call('/api/settings/playback', admin, update, { Origin: 'https://evil.example' })).status, 403);
   assert.equal((await call('/api/settings/playback', admin, update)).status, 200);
   const persisted = JSON.parse(fs.readFileSync(path.join(config.dataDir, 'state.json'))).settings;
-  assert.deepEqual(persisted.relayCache, update.relayCache);
+  assert.deepEqual(persisted.relayCache, { ...update.relayCache, online: initial.relayCache.online });
   for (const bad of [{ bilibili: { maxGiB: 0 } }, { girigiri: { ttlHours: 169 } }, { bilibili: { enabled: 'yes' } }, { other: {} }]) {
     assert.equal((await call('/api/settings/playback', admin, { relayCache: bad })).status, 400);
   }
   await call('/api/settings/playback', admin, { delivery: 'proxy' });
   const result = await (await call('/api/settings/playback', admin)).json();
-  assert.deepEqual(result.relayCache, update.relayCache);
+  assert.deepEqual(result.relayCache, persisted.relayCache);
   assert.equal(result.delivery, 'proxy');
 });
 

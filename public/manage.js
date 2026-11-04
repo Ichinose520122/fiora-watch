@@ -34,12 +34,20 @@ async function select(media) {
   try { await refreshState(); const result = await api('/api/media', { ...media, revision: state.revision }); await refreshState(); notice(result.warning || '已加载到放映室', !!result.warning); }
   finally { busy = false; refreshControls(); }
 }
+function updateLinkOptions() {
+  let hostname;
+  try { hostname = new URL($('source').value.trim()).hostname.replace(/^(www\.|m\.|mobile\.)/, ''); } catch {}
+  $('youtube-link-options').hidden = hostname !== 'youtube.com' && hostname !== 'youtu.be';
+  $('youtube-link-delivery').value = '';
+}
+$('source').oninput = updateLinkOptions;
 $('source-form').onsubmit = event => {
   event.preventDefault(); if (!$('source').reportValidity()) return;
   attempt(async () => {
     $('load').textContent = '解析中…';
     try {
-      await select({ mode: 'online', url: $('source').value.trim() });
+      const delivery = !$('youtube-link-options').hidden && $('youtube-link-delivery').value;
+      await select({ mode: 'online', url: $('source').value.trim(), ...(delivery && { youtubeDelivery: delivery }) });
       sessionStorage.removeItem(`watch-source:${room}`);
       if (state?.media?.episodes?.length) { selectedDownloads.clear(); currentGroup = ''; catalog = { title: state.media.seriesTitle || state.media.title, episodes: state.media.episodes }; selectedIndex = state.media.episodeIndex || 0; renderCatalog(); }
     } finally { $('load').textContent = '立即播放'; }
@@ -82,7 +90,7 @@ async function inspect(url) {
   catalogLoading = true; catalog = null; selectedDownloads.clear(); currentGroup = ''; renderCatalog(); $('inspect').textContent = '读取中…';
   try {
     const result = await api(`/api/catalog/episodes?url=${encodeURIComponent(url)}`);
-    catalog = result; selectedIndex = result.episodeIndex || 0; $('source').value = url; renderCatalog();
+    catalog = result; selectedIndex = result.episodeIndex || 0; $('source').value = url; updateLinkOptions(); renderCatalog();
     if (!catalog.episodes?.length) notice('未找到分集，可以直接播放此地址。');
     else $('catalog-detail').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } finally { catalogLoading = false; $('inspect').textContent = '读取分集'; refreshControls(); }
@@ -363,7 +371,7 @@ $('bilibili-refresh').onclick = () => attempt(() => loadAccount(true));
 $('bilibili-login').onclick = $('bilibili-retry').onclick = () => attempt(loginAccount);
 $('bilibili-logout').onclick = () => attempt(logoutAccount);
 let settingsBusy = false;
-const cacheProviders = ['bilibili', 'girigiri'];
+const cacheProviders = ['bilibili', 'girigiri', 'online'];
 let youtubeBusy = false;
 function youtubeHeaderCookies(header) {
   if (/[\r\n\t]/.test(header) || header.length > 65536) throw new Error('请只复制一行 Cookie 请求头');
@@ -401,7 +409,7 @@ $('youtube-remove').onclick = () => attempt(() => youtubeAccount('remove'));
 async function playbackSettings(save = false) {
   if (settingsBusy || !state?.user.admin) return; settingsBusy = true;
   const delivery = $('playback-delivery') || $('bilibili-delivery');
-  $('save-playback-settings').disabled = delivery.disabled = true;
+  $('save-playback-settings').disabled = $('relay-prefetch').disabled = delivery.disabled = true;
   const cacheFields = cacheProviders.flatMap(provider => ['enabled', 'capacity', 'retention'].map(field => $(`cache-${provider}-${field}`)));
   cacheFields.forEach(field => { field.disabled = true; });
   $('playback-settings-status').textContent = save ? '保存中…' : '读取中…';
@@ -411,7 +419,8 @@ async function playbackSettings(save = false) {
       maxGiB: Number($(`cache-${provider}-capacity`).value),
       ttlHours: Number($(`cache-${provider}-retention`).value),
     }]));
-    const result = await api('/api/settings/playback', save ? { delivery: delivery.value, relayCache } : undefined);
+    const result = await api('/api/settings/playback', save ? { delivery: delivery.value, prefetch: $('relay-prefetch').checked, relayCache } : undefined);
+    $('relay-prefetch').checked = result.prefetch !== false;
     delivery.value = (result.delivery ?? result.bilibiliDelivery) === 'proxy' ? 'proxy' : 'direct';
     for (const provider of cacheProviders) {
       const settings = result.relayCache?.[provider];
@@ -425,7 +434,7 @@ async function playbackSettings(save = false) {
     }
     $('playback-settings-status').textContent = save ? '已保存。缓存设置已应用，播放方式在下次选片生效。' : '';
   } catch (error) { $('playback-settings-status').textContent = error.message || '设置暂不可用'; throw error; }
-  finally { settingsBusy = false; $('save-playback-settings').disabled = delivery.disabled = false; cacheFields.forEach(field => { field.disabled = false; }); }
+  finally { settingsBusy = false; $('save-playback-settings').disabled = $('relay-prefetch').disabled = delivery.disabled = false; cacheFields.forEach(field => { field.disabled = false; }); }
 }
 $('playback-settings-form').onsubmit = event => { event.preventDefault(); attempt(() => playbackSettings(true)); };
 document.addEventListener('visibilitychange', () => { if (document.hidden) stopQrPolling(); else queueQrPoll(); });
@@ -445,6 +454,6 @@ setInterval(() => { if (!document.hidden && state?.user.admin && activeTab === '
 attempt(async () => {
   if (!room) return; $('home').href = $('back').href = `/room/${room}`;
   const seed = new URLSearchParams(location.hash.slice(1)).get('source'); history.replaceState(null, '', location.pathname); if (seed) sessionStorage.setItem(`watch-source:${room}`, seed);
-  $('source').value = sessionStorage.getItem(`watch-source:${room}`) || ''; await refreshState();
+  $('source').value = sessionStorage.getItem(`watch-source:${room}`) || ''; updateLinkOptions(); await refreshState();
   if (state.media?.episodes?.length) { selectedDownloads.clear(); currentGroup = ''; catalog = { title: state.media.seriesTitle || state.media.title, episodes: state.media.episodes }; selectedIndex = state.media.episodeIndex || 0; renderCatalog(); }
 });

@@ -9,7 +9,7 @@ let state; let receivedAt = 0; let currentMedia = ''; let mediaVersion = -1; let
 let chatBusy = false; let sending = false; let lastMessages = ''; let pendingSend; let scrollAfterSend = false; let noticeTimer;
 let sourceGeneration = 0; let fallbackUsed = false; let activeSource = ''; let playAttempt = 0; let locallySeeking = false;
 let seekTimer; let seekSequence = 0; let seekDragging = false;
-let autoplayBlocked = false; let autoMuted = false;
+let autoplayBlocked = false; let autoMuted = false; let startupTimer; let armStartup;
 let pendingSeek = false; let queuedPlayback; let inflightPlayback; let drainingPlayback = false;
 const atomShell = mountAtomPlayer({ requestControl: requestPlayerControl });
 const video = atomShell.video;
@@ -47,7 +47,7 @@ function synchronize({ forceSeek = false } = {}) {
   const goal = Math.min(target(), Number.isFinite(video.duration) ? video.duration : Infinity);
   const drift = Math.abs(video.currentTime - goal);
   // A stalled decoder needs time to fill its buffer. Repeated clock corrections discard that work.
-  const canCorrect = state.paused || (!video.seeking && video.readyState >= 3);
+  const canCorrect = state.paused || (!video.paused && video.played?.length > 0 && !video.seeking && video.readyState >= 3);
   if (pendingSeek || (!applying && canCorrect && drift > 1.2)) {
     if (drift > 0.05) video.currentTime = goal;
     pendingSeek = false;
@@ -68,10 +68,11 @@ async function playLocal({ manual = false } = {}) {
     }
     if (current()) { autoplayBlocked = true; enabled = false; $('join').hidden = false; }
   } finally {
-    if (current()) { applying = false; if (state?.paused || !enabled) video.pause(); }
+    if (current()) { applying = false; if (state?.paused || !enabled) video.pause(); updateJoin(); }
   }
 }
 function loadMedia(source, { preserve = false } = {}) {
+  clearTimeout(startupTimer); armStartup = undefined;
   const generation = ++sourceGeneration; activeSource = source; playAttempt += 1; applying = false;
   pendingSeek = Boolean(source); if (!preserve) queuedPlayback = undefined;
   clearTimeout(seekTimer); seekSequence += 1; seekDragging = false; locallySeeking = false; danmaku.clear(); atomShell.reset();
@@ -82,6 +83,7 @@ function loadMedia(source, { preserve = false } = {}) {
   if (!source) return;
   const failed = () => {
     if (generation !== sourceGeneration || source !== activeSource) return;
+    clearTimeout(startupTimer); armStartup = undefined;
     const fallback = state?.media?.fallbackUrl;
     if (!fallbackUsed && state?.media?.playbackMode === 'direct' && fallback && fallback !== source && new URL(fallback, location.origin).origin === location.origin) {
       fallbackUsed = true; loadMedia(fallback, { preserve: true }); notice('已自动调整播放方式，正在重新加载…'); return;
@@ -99,13 +101,22 @@ function loadMedia(source, { preserve = false } = {}) {
       } } });
       player.attachDash(instance, dashjs.MediaPlayer.events);
       instance.on(dashjs.MediaPlayer.events.ERROR, event => { if (event.error) failed(); });
-      instance.initialize(video, source, false);
+      instance.initialize(video, source, false, target());
     } else if (kind === 'hls' && typeof Hls !== 'undefined' && Hls.isSupported()) {
       const instance = new Hls({ maxBufferLength: 90, maxMaxBufferLength: 120, backBufferLength: 30 }); hls = instance;
       player.attachHls(instance, Hls.Events); instance.loadSource(source); instance.attachMedia(video);
       instance.on(Hls.Events.ERROR, (_event, data) => { if (data.fatal) failed(); });
     } else video.src = source;
     video.onerror = () => { if (video.error) failed(); };
+    // Engine scripts have their own deadline. Start timing the CDN only after attachment.
+    if (generation !== sourceGeneration) return;
+    armStartup = () => {
+      clearTimeout(startupTimer);
+      startupTimer = setTimeout(() => {
+        if (!autoplayBlocked && (video.readyState < 2 || (!state.paused && !video.ended && !video.played.length))) failed();
+      }, !fallbackUsed && state.media.fallbackUrl ? 15000 : 30000);
+    };
+    armStartup();
   }).catch(error => {
     if (generation === sourceGeneration) { player.fail(error.message || '播放组件加载失败，请重试。'); notice(error.message || '播放组件加载失败，请重试。', true); }
   });
@@ -127,7 +138,6 @@ function receive(next) {
   $('back-to-fiora').href = next.fioraUrl;
   $('toggle').textContent = next.paused ? '▶' : 'Ⅱ'; $('toggle').setAttribute('aria-label', next.paused ? '播放' : '暂停');
   $('toggle').disabled = $('seek').disabled = !next.canControl || !next.media;
-  $('join').hidden = enabled || next.paused || !next.media;
   atomShell.update(next);
   renderEpisodes();
   const source = next.media?.url || '';
@@ -136,6 +146,11 @@ function receive(next) {
     locallySeeking = false; loadMedia(source);
   }
   synchronize({ forceSeek: Boolean(timelineChanged) });
+  updateJoin();
+}
+function updateJoin() {
+  const waitingForGesture = !state?.canControl && video.paused && video.readyState < 2 && !applying;
+  $('join').hidden = !state?.media || state.paused || (enabled && !waitingForGesture);
 }
 async function action(action, extra = {}) {
   if (controlBusy || !state?.canControl || !state.media || episodeBusy) return false;
@@ -179,6 +194,7 @@ function queuePlayback(command) {
 }
 function unlock({ start = false } = {}) {
   enabled = true; autoplayBlocked = false; $('join').hidden = true;
+  armStartup?.();
   if (autoMuted) { video.muted = false; autoMuted = false; $('unmute').hidden = true; }
   if (state?.paused && !start) return Promise.resolve();
   return playLocal({ manual: start });
@@ -275,6 +291,10 @@ $('seek').onblur = () => requestPlayerControl('seek-cancel');
 $('volume').oninput = event => { video.volume = Number(event.target.value); };
 $('retry-player').onclick = () => { if (state?.media) { notice(''); loadMedia(fallbackUsed ? state.media.fallbackUrl : currentMedia, { preserve: true }); } };
 video.addEventListener('loadedmetadata', synchronize); video.addEventListener('canplay', synchronize);
+for (const event of ['loadeddata', 'canplay', 'playing']) video.addEventListener(event, () => {
+  if (video.readyState >= 2 && (event === 'playing' || state?.paused)) { clearTimeout(startupTimer); armStartup = undefined; }
+  updateJoin();
+});
 video.addEventListener('ended', () => {
   if (!video.ended || !state?.canControl || state.paused || replayPending()) return;
   // Capture both versions now; a delayed ending must never pause a newer replay.

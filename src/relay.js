@@ -96,7 +96,7 @@ export class MediaRelay {
   isManifest(resource, upstream) {
     return resource.manifest || MANIFEST_TYPES.test(String(upstream.response.headers['content-type'] || '')) || /\.m3u8(?:[?#]|$)/i.test(upstream.url || resource.url);
   }
-  async manifest(room, upstream, signal) {
+  async manifest(room, upstream, signal, onPlaylist) {
     const response = upstream.response;
     const encoding = response.headers['content-encoding'];
     const decoder = encoding === 'gzip' ? createGunzip() : encoding === 'deflate' ? createInflate() : encoding === 'br' ? createBrotliDecompress() : null;
@@ -114,7 +114,10 @@ export class MediaRelay {
         chunks.push(chunk);
       }
       signal?.throwIfAborted();
-      return this.rewrite(room, Buffer.concat(chunks).toString('utf8'), upstream.url);
+      const text = Buffer.concat(chunks).toString('utf8');
+      const manifest = this.rewrite(room, text, upstream.url);
+      onPlaylist?.(text, upstream.url);
+      return manifest;
     } finally { signal?.removeEventListener('abort', abort); response.destroy(); decoder?.destroy(); }
   }
 }

@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verifyTicket, randomId } from './auth.js';
-import { Store, control } from './store.js';
+import { Store, control, position } from './store.js';
 import { MediaLibrary, safeFile } from './media.js';
 import { resolveMedia } from './resolver.js';
 import { loadConfig } from './config.js';
@@ -14,12 +14,14 @@ import { BilibiliAccount } from './bilibili-account.js';
 import { YoutubeAccount } from './youtube-account.js';
 import QRCode from 'qrcode';
 import { pipeline } from 'node:stream/promises';
+import { PassThrough } from 'node:stream';
 import { publicAssets } from './assets.js';
 import { MediaRelay } from './relay.js';
 import { socialHosts, youtubeTrackUrl } from './social.js';
 import { buildDashManifest } from './dash.js';
 import { registerLibraryRoutes } from './library-api.js';
 import { RelayCache } from './relay-cache.js';
+import { RelayPrefetch, hlsSegments, dashSegments, mp4Ahead } from './prefetch.js';
 import { cacheSettings, updateCacheSettings, cachePolicies, cacheProvider } from './cache-settings.js';
 
 export const SESSION_MS = 180 * 60000;
@@ -47,9 +49,21 @@ export function createApp(config, dependencies = {}) {
   const relayFor = media => platformRelays.get(media?.provider) || defaultRelay;
   const relayStreams = new Set();
   const relayCache = new RelayCache({ directory: path.join(config.dataDir, 'relay-cache'), settings: () => cachePolicies(store.data.settings?.relayCache) });
+  const prefetch = new RelayPrefetch(() => relayStreams.size > 0);
+  const prefetchEnabled = () => store.data.settings?.prefetch !== false;
+  let bufferedMp4Streams = 0;
+  async function forwardMedia(response, res, media, range) {
+    // Native players commonly use an open-ended GET. Read ahead on that same
+    // connection instead of issuing a competing request for the same bytes.
+    if (media.kind !== 'mp4' || (range && !/^bytes=\d+-$/.test(range)) || bufferedMp4Streams >= 4 ||
+        !prefetchEnabled() || !relayCache.policy(cacheProvider(media)).enabled) return pipeline(response, res);
+    bufferedMp4Streams++;
+    try { await pipeline(response, new PassThrough({ highWaterMark: 1024 * 1024 }), res); }
+    finally { bufferedMp4Streams--; }
+  }
   const playbackSettings = () => {
     const delivery = (store.data.settings?.delivery ?? store.data.settings?.bilibiliDelivery) === 'proxy' ? 'proxy' : 'direct';
-    return { delivery, bilibiliDelivery: delivery, relayCache: cacheSettings(store.data.settings?.relayCache), cacheUsage: relayCache.stats() };
+    return { delivery, bilibiliDelivery: delivery, prefetch: prefetchEnabled(), relayCache: cacheSettings(store.data.settings?.relayCache), cacheUsage: relayCache.stats() };
   };
   const refreshing = new Map();
   const invitationUpdates = new Map();
@@ -105,7 +119,10 @@ export function createApp(config, dependencies = {}) {
     const delivery = req.body?.delivery ?? req.body?.bilibiliDelivery ?? playbackSettings().delivery;
     if (!['proxy', 'direct'].includes(delivery)) throw new Error('请选择直连或服务器中继');
     const settings = req.body?.relayCache === undefined ? cacheSettings(store.data.settings?.relayCache) : updateCacheSettings(store.data.settings?.relayCache, req.body.relayCache);
-    store.data.settings = { ...store.data.settings, delivery, bilibiliDelivery: delivery, relayCache: settings };
+    const enabled = req.body?.prefetch ?? prefetchEnabled();
+    if (typeof enabled !== 'boolean') throw new Error('预取开关无效');
+    store.data.settings = { ...store.data.settings, delivery, bilibiliDelivery: delivery, prefetch: enabled, relayCache: settings };
+    prefetch.cancel();
     store.save(); await relayCache.prune(); res.json(playbackSettings());
   });
   app.get('/api/bilibili/account', admin, async (_req, res) => res.json(await account.publicStatus()));
@@ -158,7 +175,10 @@ export function createApp(config, dependencies = {}) {
     }
     return media;
   };
-  const snapshot = (room, session, grant) => ({ ...room, media: publicMedia(room), serverTime: Date.now(), user: session.user, canControl: grant.canControl, fioraUrl: config.issuer });
+  const snapshot = (room, session, grant) => {
+    const { youtubeDelivery, ...state } = room;
+    return { ...state, media: publicMedia(room), serverTime: Date.now(), user: session.user, canControl: grant.canControl, fioraUrl: config.issuer };
+  };
   const publish = room => {
     for (const stream of streams) if (stream.room.id === room.id) stream.res.write(`data: ${JSON.stringify(snapshot(room, stream.session, stream.grant))}\n\n`);
   };
@@ -179,6 +199,47 @@ export function createApp(config, dependencies = {}) {
     res.type('application/dash+xml').send(buildDashManifest(room.media.youtubeDash, track =>
       direct ? youtubeTrackUrl(track.url) : relay.path(room, track.type), { discoverRanges: true }));
   });
+  const cacheKey = (room, url, range) => JSON.stringify([room.id, room.mediaVersion, url, range || '']);
+  const isSegment = (url, type) => /^(video|audio)\//i.test(type || '') || /\.(ts|m4s|mp4|m4a|aac|webm)(?:[?#]|$)/i.test(url);
+
+  // Observe only authorized foreground GETs. A manifest alone never downloads every rendition.
+  function observeGet(req, revision, url, range, response, load) {
+    const { room, session, grant } = req;
+    const media = room.media, provider = cacheProvider(media);
+    if (!provider || !prefetchEnabled() || !relayCache.policy(provider).enabled) return;
+    const valid = () => room.media === media && room.revision === revision && !room.paused &&
+      prefetchEnabled() && relayCache.policy(provider).enabled && grant.expires > Date.now() &&
+      [...streams].some(stream => stream.room === room && stream.session === session && stream.grant === grant);
+    const contentRange = response.headers['content-range'];
+    if (media.kind === 'dash' && response.statusCode === 206) {
+      const start = /^bytes (\d+)-/.exec(contentRange || '');
+      const size = Number(response.headers['content-length']);
+      if (start && Number(start[1]) < 256 * 1024 && size > 0 && size <= 256 * 1024) {
+        let length = 0; const chunks = [];
+        response.on('data', chunk => { length += chunk.length; if (length <= size) chunks.push(Buffer.from(chunk)); });
+        response.once('end', () => {
+          if (room.media === media && length === size) prefetch.remember(media, url, dashSegments(Buffer.concat(chunks), Number(start[1]), url));
+        });
+      }
+    }
+    response.once('end', () => {
+      if (!valid()) return;
+      const plan = prefetch.ahead(media, url, range, position(room)) ||
+        (media.kind === 'mp4' && { lane: url, tasks: mp4Ahead(url, range, contentRange) });
+      if (!plan) return;
+      prefetch.queue(room, plan.lane, plan.tasks, valid, (task, interrupt) => {
+        const signal = AbortSignal.any([interrupt, AbortSignal.timeout(Math.max(1, grant.expires - Date.now()))]);
+        return relayCache.warm(provider, cacheKey(room, task.url, task.range), () => load(task, signal), {
+          signal, cacheable: upstream => {
+            const source = upstream.response;
+            if (relayFor(media).isManifest(task, upstream) || (!task.range && source.statusCode !== 200)) return false;
+            if (task.range && (source.statusCode !== 206 || source.headers['content-range']?.split('/')[0] !== task.range.replace('=', ' '))) return false;
+            return media.kind === 'dash' || isSegment(task.url, source.headers['content-type']);
+          },
+        });
+      });
+    });
+  }
   app.get('/api/media/relay', roomAccess, async (req, res, next) => {
     const media = req.room.media;
     const relay = relayFor(media);
@@ -194,7 +255,9 @@ export function createApp(config, dependencies = {}) {
     if (relayStreams.size >= 256 || [...relayStreams].filter(active => active.room === req.room.id).length >= 24) return res.status(503).json({ error: '中继请求过多，请稍后重试' });
     const controller = new AbortController();
     const selection = { id: req.room.id, mediaVersion: req.room.mediaVersion, media };
+    const revision = req.room.revision;
     const active = { room: req.room.id, session: req.session, grant: req.grant, controller }; relayStreams.add(active);
+    prefetch.interrupt();
     const expiry = setTimeout(() => controller.abort(), Math.max(1, req.grant.expires - Date.now()));
     const abort = () => controller.abort(); res.on('close', abort);
     try {
@@ -202,9 +265,9 @@ export function createApp(config, dependencies = {}) {
       const provider = cacheProvider(media);
       const load = () => relay.open(resource, range, controller.signal);
       const upstream = provider && req.method === 'GET' && !resource.manifest
-        ? await relayCache.open(provider, JSON.stringify([selection.id, selection.mediaVersion, resource.url, range || '']), load, {
+        ? await relayCache.open(provider, cacheKey(selection, resource.url, range), load, {
           signal: controller.signal,
-          cacheable: value => !relay.isManifest(resource, value) && (/^(video|audio)\//i.test(value.response.headers['content-type'] || '') || /\.(ts|m4s|mp4|m4a|aac|webm)(?:[?#]|$)/i.test(resource.url)),
+          cacheable: value => !relay.isManifest(resource, value) && (media.youtubeDash || isSegment(resource.url, value.response.headers['content-type'])),
         }) : await load();
       const response = upstream.response;
       if (req.room.media !== media || req.grant.expires <= Date.now()) { response.destroy(); return res.sendStatus(409); }
@@ -215,7 +278,9 @@ export function createApp(config, dependencies = {}) {
         response.destroy(); return res.end();
       }
       if (relay.isManifest(resource, upstream)) {
-        const manifest = await relay.manifest(selection, upstream, controller.signal);
+        const manifest = await relay.manifest(selection, upstream, controller.signal, (text, base) => {
+          if (prefetchEnabled() && relayCache.policy(provider).enabled) prefetch.remember(media, resource.url, hlsSegments(text, base));
+        });
         if (req.room.media !== media || req.grant.expires <= Date.now()) return res.sendStatus(409);
         return res.type('application/vnd.apple.mpegurl').send(manifest);
       }
@@ -223,9 +288,10 @@ export function createApp(config, dependencies = {}) {
       res.status(response.statusCode).type(/^(?:video\/|audio\/|application\/(?:octet-stream|mp4)(?:;|$))/i.test(contentType) ? contentType : media.kind === 'mp4' ? 'video/mp4' : 'application/octet-stream');
       for (const name of ['content-length', 'content-range', 'accept-ranges', 'content-encoding']) if (response.headers[name]) res.set(name, response.headers[name]);
       if (req.method === 'HEAD') { response.destroy(); return res.end(); }
-      await pipeline(response, res);
+      observeGet(req, revision, resource.url, range, response, (task, signal) => relay.open({ url: task.url, manifest: false }, task.range || undefined, signal));
+      await forwardMedia(response, res, media, range);
     } catch (error) { if (!res.headersSent && !res.destroyed) next(error); else res.destroy(); }
-    finally { relayStreams.delete(active); clearTimeout(expiry); res.off('close', abort); controller.abort(); }
+    finally { relayStreams.delete(active); clearTimeout(expiry); res.off('close', abort); controller.abort(); prefetch.wake(); }
   });
   const bilibiliAccess = (req, res, next) => {
     if (!req.room.media?.bilibili || String(req.room.mediaVersion) !== req.query.version) return res.status(404).json({ error: '影片已切换，请刷新播放页' });
@@ -268,6 +334,7 @@ export function createApp(config, dependencies = {}) {
   app.get('/api/bilibili/track', roomAccess, bilibiliAccess, async (req, res, next) => {
     if (typeof req.query.track !== 'string' || !/^\d{1,2}$/.test(req.query.track)) return res.sendStatus(404);
     const index = Number(req.query.track); const media = req.room.media;
+    const revision = req.room.revision;
     if (!media.bilibili.tracks[index]) return res.sendStatus(404);
     if (media.playbackMode === 'direct' && req.query.delivery === 'direct') {
       // Signed CDN links are disclosed only to an authorized viewer in explicit direct mode.
@@ -277,6 +344,7 @@ export function createApp(config, dependencies = {}) {
     if (relayStreams.size >= 256 || [...relayStreams].filter(active => active.room === req.room.id).length >= 24) return res.status(503).json({ error: '播放请求过多，请稍后重试' });
     const controller = new AbortController();
     const active = { room: req.room.id, session: req.session, grant: req.grant, controller }; relayStreams.add(active);
+    prefetch.interrupt();
     const expiry = setTimeout(() => controller.abort(), Math.max(1, req.grant.expires - Date.now()));
     const abort = () => controller.abort(); res.on('close', abort);
     try {
@@ -297,7 +365,7 @@ export function createApp(config, dependencies = {}) {
           return requestTrack(media.bilibili.tracks[index], range, controller.signal);
         }
       };
-      const upstream = req.method === 'GET' ? await relayCache.open('bilibili', JSON.stringify([req.room.id, req.room.mediaVersion, trackUrl, range || '']), load, { signal: controller.signal }) : await load();
+      const upstream = req.method === 'GET' ? await relayCache.open('bilibili', cacheKey(req.room, trackUrl, range), load, { signal: controller.signal }) : await load();
       if (req.grant.expires <= Date.now() || req.room.media !== media) { upstream.response.destroy(); return res.sendStatus(403); }
       const response = upstream.response;
       res.status(response.statusCode).type(media.bilibili.tracks[index].mimeType);
@@ -306,9 +374,11 @@ export function createApp(config, dependencies = {}) {
       res.set({ 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store, no-transform' });
       for (const name of ['content-length', 'content-range', 'accept-ranges']) if (response.headers[name]) res.set(name, response.headers[name]);
       if (response.statusCode === 416 || req.method === 'HEAD') { response.destroy(); if (response.statusCode === 416) res.set('Content-Length', '0'); return res.end(); }
-      await pipeline(response, res);
+      const track = media.bilibili.tracks[index];
+      if (mediaUrl(track.url) === trackUrl) observeGet(req, revision, trackUrl, range, response, (task, signal) => requestTrack(track, task.range, signal));
+      await forwardMedia(response, res, media, range);
     } catch (error) { if (!res.headersSent && !res.destroyed) next(error); else res.destroy(); }
-    finally { relayStreams.delete(active); clearTimeout(expiry); res.off('close', abort); controller.abort(); }
+    finally { relayStreams.delete(active); clearTimeout(expiry); res.off('close', abort); controller.abort(); prefetch.wake(); }
   });
   app.get('/api/chat', roomAccess, async (req, res) => {
     throttle(`read:${req.session.user.id}`, 120);
@@ -329,17 +399,22 @@ export function createApp(config, dependencies = {}) {
     res.set({ 'Content-Type': 'text/event-stream', 'X-Accel-Buffering': 'no', Connection: 'keep-alive' }); res.flushHeaders();
     const stream = { res, room: req.room, session: req.session, grant: req.grant }; streams.add(stream);
     res.write(`data: ${JSON.stringify(snapshot(req.room, req.session, req.grant))}\n\n`);
-    req.on('close', () => streams.delete(stream));
+    req.on('close', () => {
+      streams.delete(stream);
+      if (![...streams].some(other => other.room === req.room)) prefetch.cancel(req.room);
+    });
   });
   app.post('/api/control', roomAccess, (req, res) => {
     if (!req.grant.canControl) return res.status(403).json({ error: '只有私聊参与者、群主或管理员可以控制播放' });
     throttle(req.session.user.id, 120);
-    control(req.room, req.body); store.save(); publish(req.room); res.json({ ok: true });
+    control(req.room, req.body); prefetch.cancel(req.room); store.save(); publish(req.room); res.json({ ok: true });
   });
   app.post('/api/media', roomAccess, async (req, res) => {
     if (!req.grant.canControl) return res.status(403).json({ error: '没有切换视频的权限' });
     throttle(`media:${req.session.user.id}`, 15);
     const revision = req.body.revision;
+    const delivery = req.body.youtubeDelivery;
+    if (delivery !== undefined && !['default', 'direct', 'proxy'].includes(delivery)) throw new Error('YouTube 播放方式无效');
     let media = null;
     if (req.body.mode === 'online') media = await resolve(req.body.url, config.hosts);
     else if (req.body.mode === 'local') {
@@ -347,7 +422,17 @@ export function createApp(config, dependencies = {}) {
       if (!media) throw new Error('本地视频不存在');
     } else if (req.body.mode !== 'clear') throw new Error('播放模式无效');
     if (req.grant.expires <= Date.now() || revision !== req.room.revision) throw new Error('房间状态已改变，请刷新后重新选择');
-    if (media && req.body.mode === 'online') media.playbackMode = playbackSettings().delivery;
+    if (media && req.body.mode === 'online') {
+      media.playbackMode = playbackSettings().delivery;
+      // The resolver canonicalizes watch, share and Shorts links to the same source.
+      if (media.provider === 'youtube' && media.source) {
+        const saved = req.room.youtubeDelivery ??= {};
+        if (delivery === 'default') delete saved[media.source];
+        else if (delivery) saved[media.source] = delivery;
+        media.playbackMode = saved[media.source] ?? media.playbackMode;
+      }
+    }
+    prefetch.cancel(req.room);
     for (const active of relayStreams) if (active.room === req.room.id) active.controller.abort();
     Object.assign(req.room, { media, mediaVersion: req.room.revision + 1, paused: !media, ended: false, position: 0, updatedAt: Date.now(), revision: req.room.revision + 1 });
     store.save(); publish(req.room);
@@ -373,6 +458,7 @@ export function createApp(config, dependencies = {}) {
   app.post('/api/logout', (req, res) => {
     account.cancel(cookieId(req));
     const session = req.session; sessions.delete(cookieId(req));
+    prefetch.interrupt();
     for (const active of relayStreams) if (active.session === session) active.controller.abort();
     for (const stream of streams) if (stream.session === session) { stream.res.end(); streams.delete(stream); }
     res.clearCookie('watch_session', { path: '/' }); res.json({ ok: true });
@@ -405,7 +491,7 @@ export function createApp(config, dependencies = {}) {
     for (const [key, value] of limits) if (value.since < now - 60000) limits.delete(key);
   }, 5000);
   timer.unref();
-  return { app, store, library, close: () => { clearInterval(timer); library.abort?.abort(); for (const stream of streams) stream.res.end(); for (const active of relayStreams) active.controller.abort(); return relayCache.close(); } };
+  return { app, store, library, close: () => { clearInterval(timer); prefetch.close(); library.abort?.abort(); for (const stream of streams) stream.res.end(); for (const active of relayStreams) active.controller.abort(); return relayCache.close(); } };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

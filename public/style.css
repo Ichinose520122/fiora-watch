@@ -2243,6 +2243,10 @@ input[type=checkbox] {
   z-index: 2;
 }
 
+.screen:has(#join:not([hidden])) #player-loading {
+  visibility: hidden;
+}
+
 .player-shell video::cue {
   background: rgba(0, 0, 0, 0.68);
   color: #fff;

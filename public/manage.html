@@ -61,6 +61,14 @@
                 <button id="inspect" type="button">读取分集</button>
                 <button id="load" class="primary" disabled>立即播放</button>
               </div>
+              <label id="youtube-link-options" hidden>此 YouTube 视频在本房间的播放方式
+                <select id="youtube-link-delivery">
+                  <option value="">沿用此视频的设置（首次跟随全站）</option>
+                  <option value="proxy">服务器中继</option>
+                  <option value="direct">浏览器直连（失败时尝试中继）</option>
+                  <option value="default">恢复跟随全站设置</option>
+                </select>
+              </label>
             </form>
           </div>
           <section id="catalog-detail" class="catalog-detail" aria-label="剧集详情" hidden>
@@ -155,6 +163,8 @@
                 </select>
               </div>
               <p class="field-note">播放方式适用于所有在线片源，下次选片生效。</p>
+              <label><input type="checkbox" id="relay-prefetch" checked> 服务器提前预取最多 5 分钟</label>
+              <p class="field-note">中继播放时优先满足观众请求，再预取当前清晰度的后续片段。使用下方各来源的缓存配额。</p>
               <fieldset class="relay-cache-settings">
                 <legend>Bilibili 缓存</legend>
                 <label><input id="cache-bilibili-enabled" type="checkbox" checked> 启用服务器缓存</label>
@@ -173,7 +183,16 @@
                 <input id="cache-girigiri-retention" type="number" min="1" max="168" step="1" value="24" required>
                 <p id="cache-girigiri-usage" class="field-note" role="status"></p>
               </fieldset>
-              <p class="field-note">缓存用于服务器中继播放及自动回退，直连播放不占用服务器缓存。保存后应用于后续请求；关闭会清理对应缓存，缩小容量或保留时间会淘汰超额或过期内容。下载媒体库不受影响。</p>
+              <fieldset class="relay-cache-settings">
+                <legend>YouTube、X 和其他在线片源缓存</legend>
+                <label><input id="cache-online-enabled" type="checkbox" checked> 启用服务器缓存</label>
+                <label for="cache-online-capacity">容量上限（GiB）</label>
+                <input id="cache-online-capacity" type="number" min="0.1" max="100" step="0.1" value="2" required>
+                <label for="cache-online-retention">保留时间（小时）</label>
+                <input id="cache-online-retention" type="number" min="1" max="168" step="1" value="6" required>
+                <p id="cache-online-usage" class="field-note" role="status"></p>
+              </fieldset>
+              <p class="field-note">缓存用于中继及直连失败后的自动回退。保存后应用于后续请求；关闭单个来源的缓存会清理对应数据。</p>
               <button id="save-playback-settings" class="primary">保存设置</button>
             </form>
             <p id="playback-settings-status" role="status"></p>
