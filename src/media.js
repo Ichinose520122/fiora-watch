@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { requestPublic, fetchText, allowedUrl } from './network.js';
 import { resolveMedia, parsePlaylist } from './resolver.js';
 import { isBilibiliUrl } from './bilibili.js';
+import { socialSource } from './social.js';
 import { catalogIdentity, canonicalCatalogUrl } from './catalog.js';
 
 export function safeFile(root, relative) {
@@ -136,6 +137,7 @@ export class MediaLibrary {
     const normalized = sources.map(source => {
       if (typeof source !== 'string' || !source.trim() || source.length > 4096) throw new Error('视频地址格式错误');
       if (isBilibiliUrl(source.trim())) throw new Error('B站视频请使用在线模式，暂不支持提前下载');
+      if (socialSource(source.trim())) throw new Error('YouTube 和 X 视频请使用在线模式');
       const url = allowedUrl(source.trim(), this.config.hosts); url.hash = '';
       return catalogIdentity(url.href) ? canonicalCatalogUrl(url.href) : url.href;
     });

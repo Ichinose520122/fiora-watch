@@ -15,6 +15,7 @@ import QRCode from 'qrcode';
 import { pipeline } from 'node:stream/promises';
 import { publicAssets } from './assets.js';
 import { MediaRelay } from './relay.js';
+import { socialHosts } from './social.js';
 import { registerLibraryRoutes } from './library-api.js';
 import { RelayCache } from './relay-cache.js';
 import { cacheSettings, updateCacheSettings, cachePolicies, cacheProvider } from './cache-settings.js';
@@ -38,7 +39,9 @@ export function createApp(config, dependencies = {}) {
   const listSubtitles = dependencies.listSubtitles || (media => listBilibiliSubtitles({ ...media.bilibili, source: media.source }, readBilibili));
   const fetchSubtitle = dependencies.fetchSubtitle || fetchBilibiliSubtitle;
   let subtitleCache = new WeakMap();
-  const relay = new MediaRelay(config.hosts, dependencies.requestMedia);
+  const defaultRelay = new MediaRelay(config.hosts, dependencies.requestMedia);
+  const platformRelays = new Map(Object.entries(socialHosts).map(([provider, hosts]) => [provider, new MediaRelay(hosts, dependencies.requestMedia)]));
+  const relayFor = media => platformRelays.get(media?.provider) || defaultRelay;
   const relayStreams = new Set();
   const relayCache = new RelayCache({ directory: path.join(config.dataDir, 'relay-cache'), settings: () => cachePolicies(store.data.settings?.relayCache) });
   const playbackSettings = () => {
@@ -125,6 +128,7 @@ export function createApp(config, dependencies = {}) {
   const publicMedia = room => {
     if (!room.media) return null;
     const { bilibili, ...media } = room.media;
+    const relay = relayFor(media);
     if (bilibili) {
       const base = media.kind === 'dash' ? `/api/bilibili/manifest?room=${room.id}&version=${room.mediaVersion}` : trackPath(room, 0);
       media.provider = 'bilibili';
@@ -156,6 +160,7 @@ export function createApp(config, dependencies = {}) {
   });
   app.get('/api/media/relay', roomAccess, async (req, res, next) => {
     const media = req.room.media;
+    const relay = relayFor(media);
     if (!media || media.bilibili || !['hls', 'mp4'].includes(media.kind) || !/^https?:\/\//i.test(media.url) ||
         String(req.room.mediaVersion) !== req.query.version || typeof req.query.resource !== 'string' ||
         (req.query.resource !== 'root' && !relay.validToken(req.query.resource))) return res.sendStatus(404);

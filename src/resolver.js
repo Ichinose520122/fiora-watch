@@ -1,4 +1,5 @@
 import { allowedUrl, fetchText } from './network.js';
+import { socialSource, resolveSocial } from './social.js';
 import { isCatalogUrl, listEpisodes } from './catalog.js';
 import { isBilibiliUrl, resolveBilibili } from './bilibili.js';
 import { catalogIdentity, resolveGirigiri } from './girigiri.js';
@@ -18,6 +19,8 @@ export function parseMacCMS(html, pageUrl) {
 export async function resolveMedia(input, hosts, read = fetchText) {
   if (typeof input !== 'string' || input.length > 4096) throw new Error('视频地址格式错误');
   if (isBilibiliUrl(input.trim())) return resolveBilibili(input.trim(), hosts, read);
+  const social = socialSource(input.trim());
+  if (social) return resolveSocial(social);
   const identity = catalogIdentity(input.trim());
   if (identity?.modern) return resolveGirigiri(input.trim(), hosts, read);
   try { return await resolvePageMedia(input, hosts, read); }
