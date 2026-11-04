@@ -27,8 +27,8 @@
 
 #### 在影院绑定 YouTube 账号
 
-1. 使用专用浏览器隐私窗口登录 YouTube，在同一标签打开 `https://www.youtube.com/robots.txt`，按 [yt-dlp 的导出说明](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies) 将 youtube.com 的 Cookie 导出为 Netscape 格式的 `cookies.txt`，随后关闭该隐私窗口。
-2. 以 Fiora 站点管理员身份进入影院，在「媒体中心 → 播放设置 → YouTube 账号」选择文件，点击「验证并绑定」。影院使用 YouTube 账号页面验证会话，成功后加密保存到数据卷。此账号的播放权限由影院各房间共用。
+1. 在已登录 YouTube 的浏览器打开开发者工具的「网络」面板并刷新页面。选择 `www.youtube.com` 的网页请求，从「请求标头」复制 `Cookie` 的值。也可以按 [yt-dlp 的导出说明](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies) 准备 Netscape 格式的 `cookies.txt`。
+2. 以 Fiora 站点管理员身份进入影院，在「媒体中心 → 播放设置 → YouTube 账号」粘贴 Cookie 或选择文件，点击「验证并绑定」。影院使用 YouTube 账号页面验证会话，成功后加密保存到数据卷。此账号的播放权限由影院各房间共用。
 3. 重新选择影片以应用新会话。YouTube 使会话失效后可重新导入，在同一位置点击「解除绑定」可恢复匿名解析。
 
 YouTube 提供高于 360p 的兼容 H.264 视频轨和 AAC 音轨时，影院生成 DASH 清单，浏览器按同一时间轴播放画面和声音。两条轨道均支持直连和服务器中继。缺少兼容的双轨组合时，影院选择可用的带音轨 MP4 或 HLS。实际分辨率取决于视频和平台返回的格式。

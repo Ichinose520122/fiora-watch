@@ -135,9 +135,12 @@
             <form id="youtube-account-form" class="form-block">
               <h3>YouTube 账号</h3>
               <p id="youtube-status" role="status">读取中…</p>
-              <label for="youtube-cookies">导入已登录 YouTube 的 cookies.txt（Netscape 格式）</label>
-              <input type="file" id="youtube-cookies" accept=".txt,text/plain" required>
-              <p class="field-note">所有影院房间共用此账号的播放权限。仅导出 youtube.com 的 Cookie，绑定后重新选片生效。</p>
+              <label for="youtube-cookie-header">粘贴 YouTube 请求的 Cookie</label>
+              <input type="password" id="youtube-cookie-header" maxlength="65536" autocomplete="off" spellcheck="false" placeholder="Cookie 请求头的值">
+              <p class="field-note">在已登录的 YouTube 网页按 F12，打开「网络」并刷新。选择 www.youtube.com 的网页请求，在「请求标头」中复制 Cookie 的值。</p>
+              <label for="youtube-cookies">也可以选择 cookies.txt（Netscape 格式）</label>
+              <input type="file" id="youtube-cookies" accept=".txt,text/plain">
+              <p class="field-note">所有影院房间共用此账号的播放权限。绑定后重新选片生效。</p>
               <div class="input-row">
                 <button class="primary" id="youtube-bind">验证并绑定</button>
                 <button type="button" class="quiet" id="youtube-remove" hidden>解除绑定</button>

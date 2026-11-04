@@ -20,6 +20,18 @@ function fixture() {
   const run = code => vm.runInContext(code, context); return { element, context, run };
 }
 function flatten(node) { return [node.textContent, ...node.children.map(flatten)].join(' '); }
+
+test('paste a YouTube cookie without a file and clear the field after verification', async () => {
+  const { run, element, context } = fixture();
+  run("state = {user:{admin:true}}; api = async (url, body) => { globalThis.request = {url, body}; return {saved:true}; }");
+  element('youtube-cookies').files = [];
+  element('youtube-cookie-header').value = 'Cookie: SID=test; SAPISID=a=b';
+  await run("youtubeAccount('bind')");
+  assert.equal(context.request.url, '/api/youtube/account');
+  assert.equal(context.request.body.cookies, 'www.youtube.com\tFALSE\t/\tTRUE\t0\tSID\ttest\nwww.youtube.com\tFALSE\t/\tTRUE\t0\tSAPISID\ta=b');
+  assert.equal(element('youtube-cookie-header').value, '');
+  assert.throws(() => run("youtubeHeaderCookies('SID=test\\nHost: example.com')"));
+});
 function find(node, predicate) { return predicate(node) ? node : node.children.map(child => find(child, predicate)).find(Boolean); }
 
 test('download cards expose speed, bytes, progress and credible ETA while retaining expanded details', async () => {

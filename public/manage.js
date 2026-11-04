@@ -365,6 +365,14 @@ $('bilibili-logout').onclick = () => attempt(logoutAccount);
 let settingsBusy = false;
 const cacheProviders = ['bilibili', 'girigiri'];
 let youtubeBusy = false;
+function youtubeHeaderCookies(header) {
+  if (/[\r\n\t]/.test(header) || header.length > 65536) throw new Error('请只复制一行 Cookie 请求头');
+  return header.replace(/^cookie:\s*/i, '').split(';').map(pair => {
+    const match = /^([\w-]+)=([\x21-\x3a\x3c-\x7e]*)$/.exec(pair.trim());
+    if (!match) throw new Error('请复制 Cookie 请求头的完整值');
+    return ['www.youtube.com', 'FALSE', '/', 'TRUE', '0', match[1], match[2]].join('\t');
+  }).join('\n');
+}
 async function youtubeAccount(action) {
   if (youtubeBusy || !state?.user.admin) return;
   youtubeBusy = true;
@@ -373,15 +381,17 @@ async function youtubeAccount(action) {
     let result;
     if (action === 'bind') {
       const file = $('youtube-cookies').files[0];
-      if (!file || file.size > 65536) throw new Error('请选择小于 64 KiB 的 cookies.txt');
-      const cookies = (await file.text()).split(/\r?\n/).filter(line => /^(?:#HttpOnly_)?\.?(?:www\.)?youtube\.com\t/.test(line)).join('\n');
+      const header = $('youtube-cookie-header').value.trim();
+      if (Boolean(file) === Boolean(header)) throw new Error('请选择一种方式：粘贴 Cookie 或导入 cookies.txt');
+      if (file && file.size > 65536) throw new Error('请选择小于 64 KiB 的 cookies.txt');
+      const cookies = header ? youtubeHeaderCookies(header) : (await file.text()).split(/\r?\n/).filter(line => /^(?:#HttpOnly_)?\.?(?:www\.)?youtube\.com\t/.test(line)).join('\n');
       result = await api('/api/youtube/account', { cookies });
     } else if (action === 'remove') result = await api('/api/youtube/account/logout', {});
     else result = await api('/api/youtube/account');
     $('youtube-status').textContent = result.saved ? '已保存登录会话' : '未绑定（匿名播放）';
     $('youtube-remove').hidden = !result.saved;
   } finally {
-    if (action === 'bind') $('youtube-cookies').value = '';
+    if (action === 'bind') $('youtube-cookies').value = $('youtube-cookie-header').value = '';
     youtubeBusy = false;
     $('youtube-bind').disabled = $('youtube-remove').disabled = false;
   }
