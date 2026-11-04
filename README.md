@@ -58,7 +58,7 @@ docker compose logs -f watch
 
 更新时，在原部署目录执行 `docker compose pull` 和 `docker compose up -d`。镜像直接写在 `compose.yaml` 的 `image: ghcr.io/ichinose520122/fiora-watch:latest`，`.env` 仅保存业务配置，不配置镜像。不要使用 `down -v`，以免删除影院数据卷。需要回滚时，在 Compose 中明确指定旧的 `sha-完整提交SHA` 标签或镜像摘要；恢复常规更新时改回 `latest`。
 
-`main` 的代码通过测试后自动发布 `latest`、`main` 和 `sha-完整提交SHA` 标签，并使用仓库 Compose 执行启动健康检查。当前 Compose 固定引用 `latest`，该检查未绑定本次构建的精确镜像摘要。PR 仅执行测试，不发布镜像；生产服务器需单独执行更新。
+推送到 `main` 或在该分支手动运行工作流时，直接构建镜像并发布 `latest`、`main` 和 `sha-完整提交SHA` 标签。发布后使用仓库 Compose 对 `latest` 执行启动健康检查。PR 和其他分支运行测试。生产服务器需单独执行更新。
 
 需要自行构建时，在完整源码目录使用 `docker compose -f compose.yaml -f compose.build.yaml up -d --build`。
 
