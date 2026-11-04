@@ -364,6 +364,30 @@ $('bilibili-login').onclick = $('bilibili-retry').onclick = () => attempt(loginA
 $('bilibili-logout').onclick = () => attempt(logoutAccount);
 let settingsBusy = false;
 const cacheProviders = ['bilibili', 'girigiri'];
+let youtubeBusy = false;
+async function youtubeAccount(action) {
+  if (youtubeBusy || !state?.user.admin) return;
+  youtubeBusy = true;
+  $('youtube-bind').disabled = $('youtube-remove').disabled = true;
+  try {
+    let result;
+    if (action === 'bind') {
+      const file = $('youtube-cookies').files[0];
+      if (!file || file.size > 65536) throw new Error('请选择小于 64 KiB 的 cookies.txt');
+      const cookies = (await file.text()).split(/\r?\n/).filter(line => /^(?:#HttpOnly_)?\.?(?:www\.)?youtube\.com\t/.test(line)).join('\n');
+      result = await api('/api/youtube/account', { cookies });
+    } else if (action === 'remove') result = await api('/api/youtube/account/logout', {});
+    else result = await api('/api/youtube/account');
+    $('youtube-status').textContent = result.saved ? '已保存登录会话' : '未绑定（匿名播放）';
+    $('youtube-remove').hidden = !result.saved;
+  } finally {
+    if (action === 'bind') $('youtube-cookies').value = '';
+    youtubeBusy = false;
+    $('youtube-bind').disabled = $('youtube-remove').disabled = false;
+  }
+}
+$('youtube-account-form').onsubmit = event => { event.preventDefault(); attempt(() => youtubeAccount('bind')); };
+$('youtube-remove').onclick = () => attempt(() => youtubeAccount('remove'));
 async function playbackSettings(save = false) {
   if (settingsBusy || !state?.user.admin) return; settingsBusy = true;
   const delivery = $('playback-delivery') || $('bilibili-delivery');
@@ -405,7 +429,7 @@ document.querySelectorAll('[data-tab]').forEach(tab => { tab.onclick = () => {
   if (activeTab === 'local') attempt(library);
   if (activeTab === 'download') attempt(downloads);
   if (activeTab === 'bilibili') { attempt(() => loadAccount()); queueQrPoll(); }
-  if (activeTab === 'settings') attempt(() => playbackSettings());
+  if (activeTab === 'settings') { attempt(() => playbackSettings()); attempt(() => youtubeAccount()); }
 }; });
 setInterval(() => { if (!document.hidden && state?.user.admin && activeTab === 'download') attempt(downloads); }, 2000);
 attempt(async () => {

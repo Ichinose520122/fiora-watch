@@ -2,6 +2,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { socialSource, resolveSocial } from '../src/social.js';
 
+test('YouTube split extraction validates both CDN URLs and preserves track metadata', async () => {
+  const tracks = [
+    { url: 'https://v.googlevideo.com/video', width: 1920, height: 1080, vcodec: 'avc1.640028', tbr: 2000 },
+    { url: 'https://v.googlevideo.com/audio', acodec: 'mp4a.40.2', tbr: 128 },
+  ];
+  const resolve = () => resolveSocial(socialSource('https://youtu.be/jNQXAC9IVRw'), async () => ({
+    stdout: [JSON.stringify({ title: 'test', duration: 20, protocol: 'https+https' }), JSON.stringify(tracks)].join('\n'),
+  }));
+  const media = await resolve();
+  assert.equal(media.kind, 'dash');
+  assert.deepEqual(media.youtubeDash.tracks.map(t => [t.type, t.bandwidth]), [['video', 2000000], ['audio', 128000]]);
+  tracks[1].url = 'https://example.org/audio';
+  await assert.rejects(resolve, /未能解析/);
+});
+
 test('canonicalize YouTube shares and X posts without carrying tracking or playlist parameters', () => {
   const source = 'https://www.youtube.com/watch?v=jNQXAC9IVRw';
   for (const url of [source + '&list=PL1', 'https://youtu.be/jNQXAC9IVRw?t=9', 'https://m.youtube.com/shorts/jNQXAC9IVRw']) {

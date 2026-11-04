@@ -16,11 +16,11 @@ export function parseMacCMS(html, pageUrl) {
   return new URL(url, pageUrl).href;
 }
 
-export async function resolveMedia(input, hosts, read = fetchText) {
+export async function resolveMedia(input, hosts, read = fetchText, youtubeAccount) {
   if (typeof input !== 'string' || input.length > 4096) throw new Error('视频地址格式错误');
   if (isBilibiliUrl(input.trim())) return resolveBilibili(input.trim(), hosts, read);
   const social = socialSource(input.trim());
-  if (social) return resolveSocial(social);
+  if (social) return resolveSocial(social, undefined, youtubeAccount);
   const identity = catalogIdentity(input.trim());
   if (identity?.modern) return resolveGirigiri(input.trim(), hosts, read);
   try { return await resolvePageMedia(input, hosts, read); }

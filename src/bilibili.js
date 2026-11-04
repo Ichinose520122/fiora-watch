@@ -1,3 +1,4 @@
+import { buildDashManifest, segmentRange } from './dash.js';
 import { allowedUrl, fetchText, requestPublic } from './network.js';
 
 // These domains belong to the supported provider, independent of custom source settings.
@@ -161,13 +162,6 @@ export function mediaUrl(value) {
   return url.href;
 }
 
-function segmentRange(value) {
-  if (typeof value !== 'string' || !/^\d+-\d+$/.test(value)) throw new Error('B站 DASH 字节索引无效');
-  const [start, end] = value.split('-').map(Number);
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start > end) throw new Error('B站 DASH 字节索引无效');
-  return `${start}-${end}`;
-}
-
 function trackFrom(item, type, index) {
   if (item.drm || item.is_drm || item.drm_type) throw new Error(UNSUPPORTED);
   const segment = item.SegmentBase || item.segment_base;
@@ -219,26 +213,13 @@ export async function resolveBilibili(input, _hosts, read = fetchText) {
   throw new Error(UNSUPPORTED);
 }
 
-const xml = value => String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[character]);
-
 export function buildBilibiliManifest(media, trackUrl, { direct = false } = {}) {
   if (media.kind !== 'dash' || !media.bilibili?.tracks?.length) throw new Error('没有有效的B站 DASH 清单');
-  const adaptations = ['video', 'audio'].map(type => {
-    const representations = media.bilibili.tracks.map((track, index) => {
-      if (track.type !== type) return '';
-      // Direct mode puts validated provider URLs in the manifest itself, avoiding
-      // an extra Watch request/redirect for every initialization and media range.
-      const local = direct ? mediaUrl(track.url) : trackUrl(track, index);
-      if (!direct && (typeof local !== 'string' || !local.startsWith('/') || local.startsWith('//') || /[\\\r\n]/.test(local) || new URL(local, 'https://watch.invalid').origin !== 'https://watch.invalid')) throw new Error('B站媒体代理必须使用同源路径');
-      const dimensions = type === 'video' ? ` width="${track.width}" height="${track.height}"${track.frameRate ? ` frameRate="${xml(track.frameRate)}"` : ''}` : '';
-      return `<Representation id="${xml(track.id)}" bandwidth="${track.bandwidth}" codecs="${xml(track.codecs)}"${dimensions}><BaseURL>${xml(local)}</BaseURL><SegmentBase indexRange="${segmentRange(track.indexRange)}" indexRangeExact="true"><Initialization range="${segmentRange(track.initialization)}"/></SegmentBase></Representation>`;
-    }).join('');
-    if (!representations) throw new Error('B站 DASH 缺少音视频轨道');
-    return `<AdaptationSet contentType="${type}" mimeType="${type}/mp4" segmentAlignment="true" startWithSAP="1">${representations}</AdaptationSet>`;
-  }).join('');
-  const duration = Number(media.bilibili.duration);
-  if (!Number.isFinite(duration) || duration <= 0 || duration > 7 * 86400) throw new Error('B站视频时长无效');
-  return `<?xml version="1.0" encoding="UTF-8"?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011" minBufferTime="PT1.5S" mediaPresentationDuration="PT${duration}S"><Period start="PT0S">${adaptations}</Period></MPD>`;
+  return buildDashManifest(media.bilibili, (track, index) => {
+    const local = direct ? mediaUrl(track.url) : trackUrl(track, index);
+    if (!direct && (typeof local !== 'string' || !local.startsWith('/') || local.startsWith('//') || /[\\\r\n]/.test(local) || new URL(local, 'https://watch.invalid').origin !== 'https://watch.invalid')) throw new Error('B站媒体代理必须使用同源路径');
+    return local;
+  });
 }
 
 export function validateByteRange(range) {

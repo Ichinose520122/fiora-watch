@@ -132,6 +132,17 @@
             <h2>播放设置</h2>
           </div>
           <section id="playback-settings" aria-label="播放方式">
+            <form id="youtube-account-form" class="form-block">
+              <h3>YouTube 账号</h3>
+              <p id="youtube-status" role="status">读取中…</p>
+              <label for="youtube-cookies">导入已登录 YouTube 的 cookies.txt（Netscape 格式）</label>
+              <input type="file" id="youtube-cookies" accept=".txt,text/plain" required>
+              <p class="field-note">所有影院房间共用此账号的播放权限。仅导出 youtube.com 的 Cookie，绑定后重新选片生效。</p>
+              <div class="input-row">
+                <button class="primary" id="youtube-bind">验证并绑定</button>
+                <button type="button" class="quiet" id="youtube-remove" hidden>解除绑定</button>
+              </div>
+            </form>
             <form id="playback-settings-form">
               <label for="playback-delivery">在线视频加载方式</label>
               <div class="input-row">

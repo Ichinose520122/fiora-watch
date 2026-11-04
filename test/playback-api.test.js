@@ -10,6 +10,43 @@ import { signTicket } from '../src/auth.js';
 
 const room = 'b'.repeat(24);
 
+test('YouTube DASH keeps tracks scoped to the room, media revision and selected delivery', async t => {
+  const youtubeDash = { duration: 120, tracks: [
+    { id: 'video', type: 'video', width: 1920, height: 1080, codecs: 'avc1.640028', bandwidth: 2000000, url: 'https://r.googlevideo.com/v' },
+    { id: 'audio', type: 'audio', codecs: 'mp4a.40.2', bandwidth: 128000, url: 'https://r.googlevideo.com/a' },
+  ] };
+  const { call, login } = await fixture(t, { resolve: async () => ({ provider: 'youtube', kind: 'dash', title: 'Example', youtubeDash }) });
+  const admin = await login(true); const viewer = await login(false);
+  await call('/api/media', admin, { mode: 'online', url: 'https://youtu.be/jNQXAC9IVRw', revision: 0 });
+  const { media } = await (await call('/api/state', viewer)).json();
+  assert.equal(media.youtubeDash, undefined);
+  assert.equal((await call(media.url, '')).status, 401);
+  const direct = await (await call(media.url, viewer)).text();
+  assert.match(direct, /r\.googlevideo\.com\/v/);
+  assert.match(direct, /r\.googlevideo\.com\/a/);
+  const proxy = await (await call(media.fallbackUrl, viewer)).text();
+  assert.doesNotMatch(proxy, /googlevideo/);
+  assert.match(proxy, /resource=video/);
+  assert.match(proxy, /resource=audio/);
+  assert.equal((await call(media.url.replace('version=1', 'version=0'), viewer)).status, 404);
+  assert.equal((await call(media.url.replace(room, 'f'.repeat(24)), viewer, undefined, { 'X-Watch-Room': 'f'.repeat(24) })).status, 403);
+});
+
+test('only same-origin administrators can bind or remove the YouTube session', async t => {
+  const { call, login } = await fixture(t, { youtubeAccount: {
+    status: () => ({ saved: false }), bind: () => ({ saved: true }), remove: () => ({ saved: false }),
+  } });
+  const viewer = await login(false); const admin = await login(true);
+  const url = '/api/youtube/account';
+  assert.equal((await call(url, '')).status, 401);
+  assert.equal((await call(url, viewer)).status, 403);
+  assert.equal((await call(url, viewer, {})).status, 403);
+  assert.equal((await call(url + '/logout', viewer, {})).status, 403);
+  assert.equal((await call(url, admin, {}, { Origin: 'https://other.example' })).status, 403);
+  assert.deepEqual(await (await call(url, admin, { cookies: 'fixture' })).json(), { saved: true });
+  assert.deepEqual(await (await call(url + '/logout', admin, {})).json(), { saved: false });
+});
+
 test('per-provider cache settings validate, persist and require administrator origin checks', async t => {
   const { call, login, config } = await fixture(t);
   const admin = await login(true); const viewer = await login(false);

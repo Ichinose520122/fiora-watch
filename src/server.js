@@ -11,11 +11,13 @@ import { createCatalog } from './catalog.js';
 import { isBilibiliUrl, listBilibiliEpisodes, resolveBilibili, buildBilibiliManifest, requestBilibiliTrack, authenticatedBilibiliReader, mediaUrl, validateByteRange } from './bilibili.js';
 import { listBilibiliSubtitles, fetchBilibiliSubtitle } from './bilibili-subtitles.js';
 import { BilibiliAccount } from './bilibili-account.js';
+import { YoutubeAccount } from './youtube-account.js';
 import QRCode from 'qrcode';
 import { pipeline } from 'node:stream/promises';
 import { publicAssets } from './assets.js';
 import { MediaRelay } from './relay.js';
-import { socialHosts } from './social.js';
+import { socialHosts, youtubeTrackUrl } from './social.js';
+import { buildDashManifest } from './dash.js';
 import { registerLibraryRoutes } from './library-api.js';
 import { RelayCache } from './relay-cache.js';
 import { cacheSettings, updateCacheSettings, cachePolicies, cacheProvider } from './cache-settings.js';
@@ -30,9 +32,10 @@ export function createApp(config, dependencies = {}) {
   const sessions = new Map(); const streams = new Set(); const limits = new Map();
   const library = dependencies.library || new MediaLibrary(config, store);
   const account = dependencies.account || new BilibiliAccount(config);
+  const youtube = dependencies.youtubeAccount || new YoutubeAccount(config);
   const readBilibili = authenticatedBilibiliReader(account);
   const resolveBili = input => resolveBilibili(input, config.hosts, readBilibili);
-  const resolve = dependencies.resolve || ((input, hosts) => isBilibiliUrl(input) ? resolveBili(input) : resolveMedia(input, hosts));
+  const resolve = dependencies.resolve || ((input, hosts) => isBilibiliUrl(input) ? resolveBili(input) : resolveMedia(input, hosts, undefined, youtube));
   const chat = dependencies.chat || createChatBridge(config);
   const catalog = dependencies.catalog || createCatalog(config.hosts);
   const requestTrack = dependencies.requestTrack || requestBilibiliTrack;
@@ -92,6 +95,12 @@ export function createApp(config, dependencies = {}) {
   app.use('/api', (req, res, next) => req.method === 'POST' ? sameOrigin(req, res, next) : next());
   const admin = (req, res, next) => req.session.user.admin ? next() : res.status(403).json({ error: '只有站点管理员可以使用此功能' });
   app.get('/api/settings/playback', admin, (_req, res) => res.json(playbackSettings()));
+  app.get('/api/youtube/account', admin, (_req, res) => res.json(youtube.status()));
+  app.post('/api/youtube/account', admin, async (req, res) => {
+    throttle(`youtube-bind:${req.session.user.id}`, 6);
+    res.json(await youtube.bind(req.body?.cookies));
+  });
+  app.post('/api/youtube/account/logout', admin, (_req, res) => res.json(youtube.remove()));
   app.post('/api/settings/playback', admin, async (req, res) => {
     const delivery = req.body?.delivery ?? req.body?.bilibiliDelivery ?? playbackSettings().delivery;
     if (!['proxy', 'direct'].includes(delivery)) throw new Error('请选择直连或服务器中继');
@@ -127,9 +136,13 @@ export function createApp(config, dependencies = {}) {
   const trackPath = (room, index, delivery) => `/api/bilibili/track?room=${room.id}&version=${room.mediaVersion}&track=${index}${delivery ? `&delivery=${delivery}` : ''}`;
   const publicMedia = room => {
     if (!room.media) return null;
-    const { bilibili, ...media } = room.media;
+    const { bilibili, youtubeDash, ...media } = room.media;
     const relay = relayFor(media);
-    if (bilibili) {
+    if (youtubeDash) {
+      const base = `/api/youtube/manifest?room=${room.id}&version=${room.mediaVersion}`;
+      media.url = base;
+      if (media.playbackMode === 'direct') media.fallbackUrl = base + '&delivery=proxy';
+    } else if (bilibili) {
       const base = media.kind === 'dash' ? `/api/bilibili/manifest?room=${room.id}&version=${room.mediaVersion}` : trackPath(room, 0);
       media.provider = 'bilibili';
       media.playbackMode = media.playbackMode === 'direct' ? 'direct' : 'proxy';
@@ -158,13 +171,25 @@ export function createApp(config, dependencies = {}) {
     throttle(`catalog:${req.session.user.id}`, 30);
     res.json(isBilibiliUrl(req.query.url) ? await listBilibiliEpisodes(req.query.url, config.hosts, readBilibili) : await catalog.episodes(req.query.url));
   });
+  app.get('/api/youtube/manifest', roomAccess, (req, res) => {
+    const room = req.room;
+    if (!room.media?.youtubeDash || String(room.mediaVersion) !== req.query.version) return res.sendStatus(404);
+    const direct = room.media.playbackMode === 'direct' && req.query.delivery !== 'proxy';
+    const relay = relayFor(room.media);
+    res.type('application/dash+xml').send(buildDashManifest(room.media.youtubeDash, track =>
+      direct ? youtubeTrackUrl(track.url) : relay.path(room, track.type), { discoverRanges: true }));
+  });
   app.get('/api/media/relay', roomAccess, async (req, res, next) => {
     const media = req.room.media;
     const relay = relayFor(media);
-    if (!media || media.bilibili || !['hls', 'mp4'].includes(media.kind) || !/^https?:\/\//i.test(media.url) ||
-        String(req.room.mediaVersion) !== req.query.version || typeof req.query.resource !== 'string' ||
-        (req.query.resource !== 'root' && !relay.validToken(req.query.resource))) return res.sendStatus(404);
-    const resource = relay.resource(req.room, req.query.resource);
+    if (!media || media.bilibili || String(req.room.mediaVersion) !== req.query.version || typeof req.query.resource !== 'string') return res.sendStatus(404);
+    let resource;
+    if (media.youtubeDash) {
+      const track = media.youtubeDash.tracks.find(item => item.type === req.query.resource);
+      if (track) resource = { url: youtubeTrackUrl(track.url), manifest: false };
+    } else if (['hls', 'mp4'].includes(media.kind) && /^https?:\/\//i.test(media.url)) {
+      resource = relay.resource(req.room, req.query.resource);
+    }
     if (!resource) return res.sendStatus(404);
     if (relayStreams.size >= 256 || [...relayStreams].filter(active => active.room === req.room.id).length >= 24) return res.status(503).json({ error: '中继请求过多，请稍后重试' });
     const controller = new AbortController();
