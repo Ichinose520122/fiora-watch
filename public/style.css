@@ -2707,8 +2707,11 @@ body.player-fullscreen {
   background: #000;
 }
 
-.player-shell.uses-atom .atom-layer-loading,
-.player-shell.uses-atom .atom-layer-loading *,
+.player-shell.uses-atom .atom-loading,
+.player-shell.uses-atom .atom-layer-loading {
+  display: none !important;
+}
+
 .player-shell.uses-atom .atom-layer-error,
 .player-shell.uses-atom .atom-layer-error * {
   pointer-events: none !important;

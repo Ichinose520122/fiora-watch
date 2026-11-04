@@ -21,8 +21,10 @@ export function createPlayer({ video, document: doc = document, subtitles, notif
   let quality = 'auto'; let subtitle = 'off'; let backendSubtitles = []; let subtitleState = ''; let ready = false; let error = false; let hideTimer;
   let qualityItems = []; let subtitleItems = []; let changingSubtitle = false; let pendingSubtitle = 'off';
   let keyboardInput = false; let pointerControls = false; let pointerPressed = false;
+  let bufferingTimer;
 
   function loading(text = '') {
+    clearTimeout(bufferingTimer); bufferingTimer = undefined;
     element('player-loading').hidden = !text; element('loading-text').textContent = text;
     shell.setAttribute('aria-busy', String(Boolean(text)));
   }
@@ -221,7 +223,13 @@ export function createPlayer({ video, document: doc = document, subtitles, notif
   shell.addEventListener('pointerleave', () => { pointerControls = false; reveal(); });
   for (const name of ['pointerup', 'pointercancel']) doc.addEventListener(name, () => { if (pointerPressed) { pointerPressed = false; reveal(); } });
   for (const name of ['focusin', 'focusout']) shell.addEventListener(name, reveal);
-  for (const name of ['loadstart', 'waiting', 'seeking']) video.addEventListener(name, () => { if (media && !error) loading(ready ? '正在缓冲…' : '正在加载影片…'); reveal(); });
+  for (const name of ['loadstart', 'waiting', 'seeking']) video.addEventListener(name, () => {
+    if (media && !error) {
+      if (!ready) loading('正在加载影片…');
+      else if (bufferingTimer === undefined) bufferingTimer = setTimeout(() => loading('正在缓冲…'), 350);
+    }
+    reveal();
+  });
   for (const name of ['loadeddata', 'canplay', 'playing', 'seeked']) video.addEventListener(name, () => { ready = true; loading(''); renderQuality(); renderSubtitles(); reveal(); });
   for (const name of ['pause', 'ended']) video.addEventListener(name, () => { loading(''); reveal(); });
   video.addEventListener('loadedmetadata', () => { renderQuality(); renderSubtitles(); });

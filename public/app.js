@@ -45,7 +45,13 @@ function synchronize({ forceSeek = false } = {}) {
   if (state.paused) video.pause();
   if (video.readyState < 1 || locallySeeking) return;
   const goal = Math.min(target(), Number.isFinite(video.duration) ? video.duration : Infinity);
-  if (pendingSeek || (!applying && Math.abs(video.currentTime - goal) > 1.2)) { video.currentTime = goal; pendingSeek = false; }
+  const drift = Math.abs(video.currentTime - goal);
+  // A stalled decoder needs time to fill its buffer. Repeated clock corrections discard that work.
+  const canCorrect = state.paused || (!video.seeking && video.readyState >= 3);
+  if (pendingSeek || (!applying && canCorrect && drift > 1.2)) {
+    if (drift > 0.05) video.currentTime = goal;
+    pendingSeek = false;
+  }
   if (!applying && !state.paused && enabled && video.paused && !video.ended) void playLocal();
 }
 async function playLocal({ manual = false } = {}) {
@@ -88,12 +94,14 @@ function loadMedia(source, { preserve = false } = {}) {
     if (kind === 'dash') {
       if (typeof dashjs === 'undefined') { player.fail('播放器未就绪，请刷新后重试。'); return; }
       const instance = dashjs.MediaPlayer().create(); dash = instance;
-      instance.updateSettings({ streaming: { buffer: { bufferTimeDefault: 30 } } });
+      instance.updateSettings({ streaming: { buffer: {
+        bufferTimeDefault: 90, bufferTimeAtTopQuality: 90, bufferTimeAtTopQualityLongForm: 120, bufferToKeep: 30,
+      } } });
       player.attachDash(instance, dashjs.MediaPlayer.events);
       instance.on(dashjs.MediaPlayer.events.ERROR, event => { if (event.error) failed(); });
       instance.initialize(video, source, false);
     } else if (kind === 'hls' && typeof Hls !== 'undefined' && Hls.isSupported()) {
-      const instance = new Hls({ maxBufferLength: 30, maxMaxBufferLength: 60 }); hls = instance;
+      const instance = new Hls({ maxBufferLength: 90, maxMaxBufferLength: 120, backBufferLength: 30 }); hls = instance;
       player.attachHls(instance, Hls.Events); instance.loadSource(source); instance.attachMedia(video);
       instance.on(Hls.Events.ERROR, (_event, data) => { if (data.fatal) failed(); });
     } else video.src = source;
@@ -105,7 +113,8 @@ function loadMedia(source, { preserve = false } = {}) {
 function receive(next) {
   if (state && next.revision < state.revision) return;
   const timelineChanged = state && next.revision > state.revision && next.mediaVersion === state.mediaVersion &&
-    ((next.paused && next.position !== state.position) || next.position < state.position || (state.ended && !next.ended));
+    (((next.paused || !state.paused) && next.position !== state.position) ||
+      next.position < state.position || (state.ended && !next.ended));
   state = next; receivedAt = performance.now();
   if (!next.canControl || !next.media) queuedPlayback = undefined;
   if (!next.canControl && locallySeeking) {
@@ -206,7 +215,10 @@ function requestPlayerControl(command, position) {
         finally {
           // An earlier response must never release a newer drag or seek.
           if (generation === sourceGeneration && sequence === seekSequence) {
-            locallySeeking = false; synchronize({ forceSeek: success });
+            locallySeeking = false;
+            // The local seek already started on release. Preserve its buffered frames on acknowledgement.
+            if (success && state.position === value && Math.abs(video.currentTime - target()) <= 1.2) pendingSeek = false;
+            synchronize();
           }
         }
       });
@@ -331,7 +343,17 @@ attempt(async () => {
   receive(await api('/api/state')); void refreshChat();
   if (!atomShell.active) notice('已使用基础播放器，刷新可重试。', true);
   events = new EventSource(`/api/events?room=${encodeURIComponent(room)}`);
+  let disconnectTimer;
   events.onopen = () => { $('connection').textContent = '正在同步'; };
-  events.onmessage = event => { const next = JSON.parse(event.data); enabled = !autoplayBlocked; receive(next); };
-  events.onerror = () => { video.pause(); enabled = false; $('join').hidden = !state?.media; $('connection').textContent = '重新连接中'; };
+  events.onmessage = event => {
+    const next = JSON.parse(event.data);
+    clearTimeout(disconnectTimer); disconnectTimer = undefined;
+    enabled = !autoplayBlocked; receive(next);
+  };
+  events.onerror = () => {
+    $('connection').textContent = '重新连接中';
+    const pauseDisconnected = () => { video.pause(); enabled = false; $('join').hidden = !state?.media; };
+    if (events.readyState === EventSource.CLOSED) { clearTimeout(disconnectTimer); pauseDisconnected(); }
+    else if (disconnectTimer === undefined) disconnectTimer = setTimeout(pauseDisconnected, 15000);
+  };
 });

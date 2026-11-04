@@ -34,6 +34,19 @@ function engine(representations) {
 const events = { STREAM_INITIALIZED: 'ready', REPRESENTATION_SWITCH: 'switch', QUALITY_CHANGE_RENDERED: 'quality', TEXT_TRACKS_ADDED: 'text' };
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
+test('brief stalls and buffered seeks do not flash the loading overlay', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(); f.controls.begin({ kind: 'mp4' }, 1);
+  f.video.dispatchEvent(new Event('canplay'));
+  f.video.dispatchEvent(new Event('seeking')); t.mock.timers.tick(100);
+  f.video.dispatchEvent(new Event('seeked')); t.mock.timers.tick(500);
+  assert.equal(f.get('player-loading').hidden, true);
+  f.video.dispatchEvent(new Event('waiting')); t.mock.timers.tick(400);
+  assert.equal(f.get('player-loading').hidden, false);
+  f.video.dispatchEvent(new Event('playing'));
+  assert.equal(f.get('player-loading').hidden, true);
+});
+
 test('quality labels use actual representation metadata and approved labels', () => {
   assert.equal(qualityLabel({ id: 'video-0', height: 1080, frameRate: 60 }), '1080P 60帧');
   assert.equal(qualityLabel({ id: 'video-0', height: 1080 }, [{ representationId: 'video-0', label: '1080P 高码率' }]), '1080P 高码率');

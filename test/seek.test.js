@@ -67,6 +67,26 @@ test('an older seek response cannot unlock or roll back a newer seek', async () 
   await f.confirm(1, f.state(250, 3)); assert.equal(f.seeking(), false); assert.equal(f.video.currentTime, 250);
 });
 
+test('a seek acknowledgement preserves the frame already decoded at the destination', async () => {
+  const f = fixture(); await flush();
+  let position = 10; const writes = [];
+  Object.defineProperty(f.video, 'currentTime', { get: () => position, set: v => { writes.push(v); position = v; } });
+  f.command('seek', 120); await f.timers();
+  position = 120.2;
+  await f.confirm(0, f.state(120, 2));
+  assert.deepEqual(writes, [120]);
+});
+
+test('ordinary clock updates do not keep seeking a playing decoder during a stall', async () => {
+  const f = fixture(); await flush();
+  f.video.paused = false; f.video.readyState = 2;
+  f.receive({ ...f.state(), paused: false, serverTime: 4000 });
+  assert.equal(f.video.currentTime, 10);
+  f.video.readyState = 4;
+  f.receive({ ...f.state(), paused: false, serverTime: 5000 });
+  assert.equal(f.video.currentTime, 15);
+});
+
 test('cancelled drag restores room time and superseded queued positions are never sent', async () => {
   const f = fixture(); await flush(); f.command('seek', 100); f.command('seek-start');
   f.receive(f.state(25, 2)); f.command('seek-cancel');
