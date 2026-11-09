@@ -3,6 +3,7 @@ import { createPlayer } from './player.js';
 import { mountAtomPlayer } from './atom-adapter.js';
 import { createDanmaku } from './danmaku.js';
 import { loadMediaEngine } from './media-engine.js';
+import { createDiscovery } from './discovery.js';
 const $ = id => document.getElementById(id);
 let room = /^\/room\/([a-f0-9]+)$/.exec(location.pathname)?.[1];
 let state; let receivedAt = 0; let currentMedia = ''; let mediaVersion = -1; let hls; let dash; let enabled = true; let events; let applying = false; let controlBusy = false; let episodeBusy = false; let episodeSignature = '';
@@ -11,6 +12,8 @@ let sourceGeneration = 0; let fallbackUsed = false; let activeSource = ''; let p
 let seekTimer; let seekSequence = 0; let seekDragging = false;
 let autoplayBlocked = false; let autoMuted = false; let startupTimer; let armStartup;
 let pendingSeek = false; let queuedPlayback; let inflightPlayback; let drainingPlayback = false;
+let prerollTimer;
+const discovery = createDiscovery({ api, getState: () => state, select: selectMedia });
 const atomShell = mountAtomPlayer({ requestControl: requestPlayerControl });
 const video = atomShell.video;
 const danmaku = createDanmaku({ container: $('danmaku-layer'), button: $('danmaku-toggle'), video });
@@ -23,7 +26,8 @@ atomShell.setFullscreen(player.toggleFullscreen);
 function notice(text, error = false) { clearTimeout(noticeTimer); $('notice').textContent = text; $('notice').hidden = !text; $('notice').classList.toggle('error', error); if (text && !error) noticeTimer = setTimeout(() => { $('notice').hidden = true; }, 3500); }
 const time = value => { const seconds = Math.max(0, Math.floor(value || 0)); return `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`; };
 async function api(url, body) {
-  const response = await fetch(url, { method: body === undefined ? 'GET' : 'POST', signal: AbortSignal.timeout(url === '/api/media' ? 45000 : 15000), headers: { 'Content-Type': 'application/json', 'X-Watch-Request': '1', 'X-Watch-Room': room || '' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const timeout = url === '/api/media' || url.startsWith('/api/catalog/') ? 45000 : 15000;
+  const response = await fetch(url, { method: body === undefined ? 'GET' : 'POST', signal: AbortSignal.timeout(timeout), headers: { 'Content-Type': 'application/json', 'X-Watch-Request': '1', 'X-Watch-Room': room || '' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const result = await response.json();
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) { video.pause(); enabled = false; }
@@ -33,16 +37,28 @@ async function api(url, body) {
 }
 function attempt(task) { return Promise.resolve().then(task).catch(error => notice(error.message, true)); }
 function target() { return state ? state.position + (state.paused ? 0 : Math.max(0, (state.serverTime - state.updatedAt) / 1000 + (performance.now() - receivedAt) / 1000)) : 0; }
+function startDelay() {
+  if (!state?.media || state.paused) return 0;
+  return Math.max(0, state.updatedAt - state.serverTime - (performance.now() - receivedAt));
+}
 function playbackStatus() {
-  $('playback-status').textContent = !state?.media ? '等待选择影片' : state.canControl ? '房间同步播放' : '跟随房间播放';
+  $('playback-status').textContent = !state?.media ? '等待选择影片' : startDelay() > 0 ? '正在预缓冲…' : state.canControl ? '房间同步播放' : '跟随房间播放';
 }
 function replayPending() { return [queuedPlayback, inflightPlayback].some(intent => intent?.version === mediaVersion && intent.restart); }
 function synchronize({ forceSeek = false } = {}) {
+  clearTimeout(prerollTimer);
   if (!state?.media) return;
+  const delay = startDelay();
+  if (delay > 0) prerollTimer = setTimeout(synchronize, Math.ceil(delay));
+  else if ($('connection').textContent === '预缓冲中') {
+    $('connection').textContent = state.paused ? '已暂停' : '同步播放中';
+    playbackStatus();
+    updateJoin();
+  }
   if (forceSeek) pendingSeek = true;
   // An older room snapshot must not seek a requested replay back to the ending.
   if (replayPending()) return;
-  if (state.paused) video.pause();
+  if (state.paused || delay > 0) video.pause();
   if (video.readyState < 1 || locallySeeking) return;
   const goal = Math.min(target(), Number.isFinite(video.duration) ? video.duration : Infinity);
   const drift = Math.abs(video.currentTime - goal);
@@ -52,9 +68,10 @@ function synchronize({ forceSeek = false } = {}) {
     if (drift > 0.05) video.currentTime = goal;
     pendingSeek = false;
   }
-  if (!applying && !state.paused && enabled && video.paused && !video.ended) void playLocal();
+  if (!applying && !state.paused && !delay && enabled && video.paused && !video.ended) void playLocal();
 }
 async function playLocal({ manual = false } = {}) {
+  if (startDelay() > 0) return;
   applying = true; const attempt = ++playAttempt; const generation = sourceGeneration;
   const current = () => generation === sourceGeneration && attempt === playAttempt;
   try { await video.play(); }
@@ -114,7 +131,7 @@ function loadMedia(source, { preserve = false } = {}) {
       clearTimeout(startupTimer);
       startupTimer = setTimeout(() => {
         if (!autoplayBlocked && (video.readyState < 2 || (!state.paused && !video.ended && !video.played.length))) failed();
-      }, !fallbackUsed && state.media.fallbackUrl ? 15000 : 30000);
+      }, (!fallbackUsed && state.media.fallbackUrl ? 15000 : 30000) + startDelay());
     };
     armStartup();
   }).catch(error => {
@@ -132,7 +149,7 @@ function receive(next) {
     clearTimeout(seekTimer); seekSequence += 1; seekDragging = false; locallySeeking = false;
   }
   $('identity').textContent = next.user.name; $('logout').hidden = $('manage').hidden = false;
-  $('connection').textContent = !next.media ? '等待选片' : next.paused ? '已暂停' : '同步播放中';
+  $('connection').textContent = !next.media ? '等待选片' : next.paused ? '已暂停' : startDelay() > 0 ? '预缓冲中' : '同步播放中';
   $('choose-source').hidden = !next.canControl;
   $('empty-hint').textContent = next.canControl ? '搜索影片、粘贴片源链接或打开媒体库。' : '等待可控制播放的房间成员选片。';
   $('movie-meta').hidden = !next.media;
@@ -143,6 +160,7 @@ function receive(next) {
   $('toggle').disabled = $('seek').disabled = !next.canControl || !next.media;
   atomShell.update(next);
   renderEpisodes();
+  discovery.refresh();
   const source = next.media?.url || '';
   if (source !== currentMedia || (next.mediaVersion || 0) !== mediaVersion) {
     currentMedia = source; mediaVersion = next.mediaVersion || 0; fallbackUsed = false; notice(''); video.poster = next.media?.cover || '';
@@ -153,7 +171,7 @@ function receive(next) {
 }
 function updateJoin() {
   const waitingForGesture = !state?.canControl && video.paused && video.readyState < 2 && !applying;
-  $('join').hidden = !state?.media || state.paused || (enabled && !waitingForGesture);
+  $('join').hidden = !state?.media || state.paused || startDelay() > 0 || (enabled && !waitingForGesture);
 }
 async function action(action, extra = {}) {
   if (controlBusy || !state?.canControl || !state.media || episodeBusy) return false;
@@ -302,13 +320,24 @@ function renderEpisodes() {
     button.onclick = () => attempt(() => selectEpisode(position)); $('episodes').append(button);
   });
 }
+async function selectMedia(media) {
+  if (!state?.canControl || episodeBusy || controlBusy) return;
+  episodeBusy = true; renderEpisodes();
+  try {
+    const result = await api('/api/media', { ...media, revision: state.revision });
+    receive(await api('/api/state'));
+    return result;
+  } catch (error) {
+    try { receive(await api('/api/state')); } catch { /* Report the selection error. */ }
+    throw error;
+  }
+  finally { episodeBusy = false; renderEpisodes(); }
+}
 async function selectEpisode(index) {
   const episode = state?.media?.episodes?.[index];
-  if (!episode || !state.canControl || episodeBusy || controlBusy || index === state.media.episodeIndex) return;
-  episodeBusy = true; renderEpisodes();
-  try { const result = await api('/api/media', { mode: 'online', url: episode.url, revision: state.revision }); receive(await api('/api/state')); if (result.warning) notice(result.warning, true); }
-  catch (error) { receive(await api('/api/state')); throw error; }
-  finally { episodeBusy = false; renderEpisodes(); }
+  if (!episode || index === state.media.episodeIndex) return;
+  const result = await selectMedia({ mode: 'online', url: episode.url });
+  if (result?.warning) notice(result.warning, true);
 }
 $('seek').oninput = () => requestPlayerControl('seek-start');
 $('seek').onchange = event => requestPlayerControl('seek', Number(event.target.value));
@@ -381,16 +410,21 @@ setInterval(synchronize, 1000);
 setInterval(refreshChat, 2000);
 attempt(async () => {
   const fragment = new URLSearchParams(location.hash.slice(1)); const ticket = fragment.get('ticket');
+  let inviteSource;
   if (ticket) {
     history.replaceState(null, '', '/'); const result = await api('/api/session', { ticket }); room = result.room;
-    const source = fragment.get('source'); if (source) sessionStorage.setItem(`watch-source:${room}`, source);
+    inviteSource = fragment.get('source');
     history.replaceState(null, '', `/room/${room}`);
   }
   if (!room) { notice('从 Fiora 的影院邀请进入。'); $('chat-status').textContent = '未登录'; return; }
   $('home').href = `/room/${room}`;
-  const seed = sessionStorage.getItem(`watch-source:${room}`);
-  const management = `/room/${room}/manage${seed ? '#source=' + encodeURIComponent(seed) : ''}`; $('manage').href = management; $('choose-source').href = management;
+  $('manage').href = `/room/${room}/manage`;
+  const discoveryPanel = $('online-panel');
+  discoveryPanel.open = matchMedia('(width > 760px)').matches;
+  $('choose-source').onclick = () => { discoveryPanel.open = true; };
+  discovery.setSource(inviteSource || sessionStorage.getItem(`watch-source:${room}`) || '');
   receive(await api('/api/state')); void refreshChat();
+  discoveryPanel.hidden = false;
   if (!atomShell.active) notice('已使用基础播放器，刷新可重试。', true);
   events = new EventSource(`/api/events?room=${encodeURIComponent(room)}`);
   let disconnectTimer;
@@ -406,4 +440,15 @@ attempt(async () => {
     if (events.readyState === EventSource.CLOSED) { clearTimeout(disconnectTimer); pauseDisconnected(); }
     else if (disconnectTimer === undefined) disconnectTimer = setTimeout(pauseDisconnected, 15000);
   };
+  if (inviteSource && state.canControl) {
+    try {
+      notice('正在读取邀请片源…');
+      await discovery.openInvite(inviteSource);
+      notice('');
+      sessionStorage.removeItem(`watch-source:${room}`);
+    } catch (error) {
+      discoveryPanel.open = true;
+      throw error;
+    }
+  }
 });

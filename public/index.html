@@ -51,7 +51,7 @@
               </span>
               <h2>尚未选择影片</h2>
               <p id="empty-hint">请从 Fiora 的影院邀请进入</p>
-              <a id="choose-source" href="/" target="_blank" rel="noopener" hidden>选择影片 ↗</a>
+              <a id="choose-source" href="#online-panel" hidden>选择影片 ↓</a>
             </div>
             <div id="player-loading" class="player-loading" role="status" hidden>
               <span class="loading-spinner" aria-hidden="true"></span>
@@ -122,6 +122,10 @@
             <p id="playback-status">等待选择影片</p>
           </div>
         </div>
+        <details id="online-panel" class="panel cinema-discovery" hidden>
+          <summary>发现影片 <span>搜索番剧或粘贴链接</span></summary>
+          <!-- discovery-panel -->
+        </details>
         <div id="room-panel-switch" class="room-panel-switch" role="group" aria-label="放映室面板" hidden>
           <button id="show-chat" type="button" aria-controls="chat-panel" aria-pressed="true">聊天</button>
           <button id="show-episodes" type="button" aria-controls="episode-panel" aria-pressed="false">选集</button>

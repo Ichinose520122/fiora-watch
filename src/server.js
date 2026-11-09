@@ -1,4 +1,5 @@
 import express from 'express';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verifyTicket, randomId } from './auth.js';
@@ -25,6 +26,7 @@ import { RelayPrefetch, hlsSegments, dashSegments, mp4Ahead } from './prefetch.j
 import { cacheSettings, updateCacheSettings, cachePolicies, cacheProvider } from './cache-settings.js';
 
 export const SESSION_MS = 180 * 60000;
+const PLAYBACK_PREROLL_MS = 3000;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -176,7 +178,7 @@ export function createApp(config, dependencies = {}) {
     return media;
   };
   const snapshot = (room, session, grant) => {
-    const { youtubeDelivery, ...state } = room;
+    const { youtubeDelivery, openedInvitations, ...state } = room;
     return { ...state, media: publicMedia(room), serverTime: Date.now(), user: session.user, canControl: grant.canControl, fioraUrl: config.issuer };
   };
   const publish = room => {
@@ -412,17 +414,36 @@ export function createApp(config, dependencies = {}) {
   app.post('/api/media', roomAccess, async (req, res) => {
     if (!req.grant.canControl) return res.status(403).json({ error: '此影院授权仅可观看，请从 Fiora 重新进入' });
     throttle(`media:${req.session.user.id}`, 15);
-    const revision = req.body.revision;
+    const { revision, mode, url, fromInvite } = req.body;
+    const room = req.room;
+    let invitationKey;
+    if (fromInvite === true) {
+      if (mode !== 'online' || typeof url !== 'string' || url.length > 4096) throw new Error('邀请片源无效');
+      invitationKey = createHash('sha256').update(url).digest('hex');
+      if (room.openedInvitations?.includes(invitationKey)) return res.json({ ok: true, skipped: true });
+    }
+    const verifySelection = () => {
+      if (req.grant.expires <= Date.now() || revision !== room.revision) throw new Error('房间状态已改变，请刷新后重新选择');
+    };
+    verifySelection();
     const delivery = req.body.youtubeDelivery;
     if (delivery !== undefined && !['default', 'direct', 'proxy'].includes(delivery)) throw new Error('YouTube 播放方式无效');
     let media = null;
-    if (req.body.mode === 'online') media = await resolve(req.body.url, config.hosts);
-    else if (req.body.mode === 'local') {
+    if (mode === 'online') media = await resolve(url, config.hosts);
+    else if (mode === 'local') {
       media = library.list().find(item => item.id === req.body.id);
       if (!media) throw new Error('本地视频不存在');
-    } else if (req.body.mode !== 'clear') throw new Error('播放模式无效');
-    if (req.grant.expires <= Date.now() || revision !== req.room.revision) throw new Error('房间状态已改变，请刷新后重新选择');
-    if (media && req.body.mode === 'online') {
+    } else if (mode !== 'clear') throw new Error('播放模式无效');
+    if (invitationKey && room.openedInvitations?.includes(invitationKey)) return res.json({ ok: true, skipped: true });
+    verifySelection();
+    if (invitationKey) {
+      room.openedInvitations = [...(room.openedInvitations || []), invitationKey].slice(-100);
+      if (room.media && media.source && room.media.source === media.source) {
+        store.save();
+        return res.json({ ok: true, skipped: true });
+      }
+    }
+    if (media && mode === 'online') {
       media.playbackMode = playbackSettings().delivery;
       // The resolver canonicalizes watch, share and Shorts links to the same source.
       if (media.provider === 'youtube' && media.source) {
@@ -434,7 +455,9 @@ export function createApp(config, dependencies = {}) {
     }
     prefetch.cancel(req.room);
     for (const active of relayStreams) if (active.room === req.room.id) active.controller.abort();
-    Object.assign(req.room, { media, mediaVersion: req.room.revision + 1, paused: !media, ended: false, position: 0, updatedAt: Date.now(), revision: req.room.revision + 1 });
+    const nextRevision = room.revision + 1;
+    Object.assign(room, { media, mediaVersion: nextRevision, paused: !media, ended: false, position: 0,
+      updatedAt: Date.now() + (media ? PLAYBACK_PREROLL_MS : 0), revision: nextRevision });
     store.save(); publish(req.room);
     // Serialize cover/title changes so a slow earlier choice cannot overwrite a newer card.
     const selected = media;

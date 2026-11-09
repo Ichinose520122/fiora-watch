@@ -61,6 +61,7 @@ function fixture({ canControl = true, duration = 60 } = {}) {
     },
     mountAtomPlayer: () => ({ video, active: true, atom: {}, setFullscreen() {}, reset() {}, update() {} }),
     createDanmaku: () => ({ clear() {}, ingest() {} }), loadMediaEngine: async () => {},
+    createDiscovery: () => ({ refresh() {} }),
     createPlayer: () => ({ toggleFullscreen() {}, begin() {}, fail() {} }),
   });
   const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '');

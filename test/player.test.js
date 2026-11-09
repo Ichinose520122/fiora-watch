@@ -91,14 +91,32 @@ test('subtitles allow only same-origin HTTP media URLs', () => {
   for (const value of ['https://external.example/a.vtt', '//external.example/a.vtt', 'javascript:alert(1)', 'data:text/vtt,WEBVTT', 'https://user:secret@watch.example/a.vtt']) assert.equal(sameOriginTrack(value, 'https://watch.example'), null);
 });
 
-test('DASH 5 quality selection affects only the local engine and restores automatic mode', () => {
-  const f = fixture(); const player = engine([{ id: 'hd', height: 1080 }, { id: 'sd', height: 480 }]);
+test('DASH 5 starts at the highest quality and allows local manual and automatic modes', () => {
+  const f = fixture(); const player = engine([{ id: 'sd', height: 480 }, { id: 'hd', height: 1080 }]);
   f.controls.begin({ url: '/movie.mpd', kind: 'dash' }, 1); f.controls.attachDash(player, events); player.emit('ready');
   const choices = f.get('quality-options').children;
   assert.deepEqual(choices.map(choice => choice.textContent), ['自动 · 随网络调整', '1080P', '480P']);
-  choices[2].onclick(); assert.deepEqual(player.selections, [{ type: 'video', id: 'sd' }]);
+  assert.deepEqual(player.selections, [{ type: 'video', id: 'hd' }]);
+  choices[2].onclick(); assert.deepEqual(player.selections.at(-1), { type: 'video', id: 'sd' });
   assert.equal(player.settings.at(-1).streaming.abr.autoSwitchBitrate.video, false);
   f.get('quality-options').children[0].onclick(); assert.equal(player.settings.at(-1).streaming.abr.autoSwitchBitrate.video, true);
+});
+
+test('HLS requests the highest level for startup and allows automatic mode', () => {
+  const f = fixture();
+  const handlers = [];
+  const hls = {
+    levels: [{ height: 480 }, { height: 1080 }, { height: 720 }],
+    subtitleTracks: [],
+    on(name, callback) { if (name === 'manifest') handlers.push(callback); },
+  };
+  f.controls.begin({ kind: 'hls' }, 1);
+  f.controls.attachHls(hls, { MANIFEST_PARSED: 'manifest' });
+  for (const handle of handlers) handle();
+  assert.equal(hls.startLevel, 1);
+  assert.equal(hls.nextLevel, 1);
+  f.get('quality-options').children[0].onclick();
+  assert.equal(hls.nextLevel, -1);
 });
 
 test('destroyed engine events cannot replace the current media menu', () => {

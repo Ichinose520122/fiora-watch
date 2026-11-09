@@ -47,6 +47,16 @@ test('room controls use authoritative elapsed time and reject stale writes', () 
   assert.throws(() => control(state, { action: 'seek', revision: 3, position: -1 }));
 });
 
+test('seeking during preroll keeps the scheduled start and pausing cancels it', () => {
+  const state = { media: {}, position: 0, paused: false, updatedAt: 4000, revision: 1 };
+  control(state, { action: 'seek', revision: 1, position: 12 }, 2000);
+  assert.equal(position(state, 3999), 12);
+  assert.equal(position(state, 4500), 12.5);
+  control(state, { action: 'pause', revision: 2 }, 3000);
+  control(state, { action: 'play', revision: 3 }, 3500);
+  assert.equal(position(state, 4500), 13);
+});
+
 test('SSRF guards reject private, mapped, metadata, credential and nonstandard-port addresses', async () => {
   for (const address of ['127.0.0.1', '10.0.0.1', '172.16.1.1', '192.168.1.1', '169.254.169.254', '::1', '::ffff:127.0.0.1', 'fc00::1', '0.0.0.0']) assert.equal(publicAddress(address), false, address);
   assert.equal(publicAddress('1.1.1.1'), true);
@@ -147,6 +157,49 @@ test('HTTP integration: ordinary members can search, select and play within thei
   assert.equal((await request('/media/local/movie.mp4')).status, 401);
   assert.equal((await request('/media/local/movie.mp4', cookie, undefined, { Range: 'bytes=99-100' })).status, 416);
   await request('/api/logout', cookie, {}); assert.equal((await request('/api/state', cookie)).status, 401);
+});
+
+test('an invitation selects media once across viewers and schedules a shared preroll', async t => {
+  const dataDir = temporary(t);
+  const instance = createApp({ ...config, dataDir, libraryDir: path.join(dataDir, 'library') }, {
+    resolve: async url => ({ url, source: url, title: 'Invited film', kind: 'mp4' }),
+    chat: async () => ({}),
+  });
+  const server = instance.app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  t.after(async () => { await instance.close(); await new Promise(resolve => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const headers = { Origin: config.audience, 'Content-Type': 'application/json', 'X-Watch-Request': '1', 'X-Watch-Room': room };
+  async function login(sub) {
+    const result = await fetch(base + '/api/session', {
+      method: 'POST', headers, body: JSON.stringify({ ticket: signTicket(payload({ sub }), secret) }),
+    });
+    return result.headers.get('set-cookie').split(';')[0];
+  }
+  const [first, second] = await Promise.all([login(user), login('c'.repeat(24))]);
+  const invite = { mode: 'online', url: 'https://cdn.example.com/movie.mp4', revision: 0, fromInvite: true };
+  const select = async (cookie, selection) => {
+    const response = await fetch(base + '/api/media', { method: 'POST', headers: { ...headers, Cookie: cookie }, body: JSON.stringify(selection) });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const requestedAt = Date.now();
+  const results = await Promise.all([select(first, invite), select(second, invite)]);
+  assert.equal(results.filter(result => result.skipped).length, 1);
+  const selected = instance.store.room(room);
+  assert.equal(selected.revision, 1);
+  assert.ok(selected.updatedAt >= requestedAt + 3000);
+  assert.equal(position(selected, selected.updatedAt - 1), 0);
+  assert.equal(position(selected, selected.updatedAt + 1000), 1);
+  assert.equal((await select(second, { ...invite, revision: 1 })).skipped, true);
+  assert.equal(selected.revision, 1);
+  await select(first, { ...invite, revision: 1, fromInvite: false });
+  assert.equal(selected.revision, 2);
+  for (const route of [`/room/${room}`, `/room/${room}/manage`]) {
+    const html = await (await fetch(base + route)).text();
+    assert.match(html, /id="search-form"/);
+    assert.match(html, /id="source-form"/);
+  }
 });
 
 test('chat bridge uses the configured Fiora endpoint and server-only scoped credential', async () => {

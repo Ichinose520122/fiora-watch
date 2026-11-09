@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { createDiscovery } from '../public/discovery.js';
 
 class Element {
   constructor(tag = 'div') { this.tag = tag; this.children = []; this.dataset = {}; this.value = ''; this.textContent = ''; this.classList = { add() {}, toggle() {} }; }
@@ -16,7 +17,8 @@ function fixture() {
     document: { getElementById: element, createElement: tag => new Element(tag), querySelectorAll: () => [], addEventListener() {} },
     window: { addEventListener() {} }, setInterval() {}, confirm: () => true,
   });
-  vm.runInContext(fs.readFileSync(new URL('../public/manage.js', import.meta.url), 'utf8'), context);
+  context.createDiscovery = options => createDiscovery({ ...options, document: context.document });
+  vm.runInContext(fs.readFileSync(new URL('../public/manage.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, ''), context);
   const run = code => vm.runInContext(code, context); return { element, context, run };
 }
 function flatten(node) { return [node.textContent, ...node.children.map(flatten)].join(' '); }

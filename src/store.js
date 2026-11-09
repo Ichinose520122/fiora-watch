@@ -52,6 +52,6 @@ export function control(room, input, now = Date.now()) {
   room.position = nextPosition;
   if (input.action !== 'seek') room.paused = input.action !== 'play';
   if (input.action !== 'pause') room.ended = input.action === 'ended';
-  room.updatedAt = now;
+  room.updatedAt = room.paused ? now : Math.max(room.updatedAt, now);
   room.revision += 1;
 }

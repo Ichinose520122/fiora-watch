@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Fiora Watch · 媒体中心</title>
   <link rel="stylesheet" href="/style.css">
-  <script defer src="/manage.js"></script>
+  <script type="module" src="/manage.js"></script>
 </head>
 <body class="management-page">
   <header class="topbar">
@@ -44,64 +44,7 @@
           <div class="panel-header">
             <h2>想看点什么？</h2>
           </div>
-          <form id="search-form" class="form-block">
-            <label for="search">搜索番剧</label>
-            <div class="input-row">
-              <input id="search" type="search" required maxlength="80" placeholder="输入片名…">
-              <button id="search-button" class="primary">搜索影片</button>
-            </div>
-          </form>
-          <div id="search-results" class="catalog-grid" aria-live="polite"></div>
-          <button id="more-results" class="quiet more-results" hidden>查看更多</button>
-          <div class="source-section">
-            <form id="source-form">
-              <label for="source">已有片源链接（支持 YouTube 视频和 X 视频帖子）</label>
-              <div class="input-row source-row">
-                <input id="source" type="url" required maxlength="4096" placeholder="https://…">
-                <button id="inspect" type="button">读取分集</button>
-                <button id="load" class="primary" disabled>立即播放</button>
-              </div>
-              <label id="youtube-link-options" hidden>此 YouTube 视频在本房间的播放方式
-                <select id="youtube-link-delivery">
-                  <option value="">沿用此视频的设置（首次跟随全站）</option>
-                  <option value="proxy">服务器中继</option>
-                  <option value="direct">浏览器直连（失败时尝试中继）</option>
-                  <option value="default">恢复跟随全站设置</option>
-                </select>
-              </label>
-            </form>
-          </div>
-          <section id="catalog-detail" class="catalog-detail" aria-label="剧集详情" hidden>
-            <div class="episode-heading">
-              <div>
-                <span class="eyebrow">EPISODES</span>
-                <h2 id="catalog-title"></h2>
-              </div>
-              <span id="catalog-count" class="identity"></span>
-            </div>
-            <p id="catalog-description"></p>
-            <div class="selection-actions selection-top">
-              <label for="catalog-group">播放线路</label>
-              <select id="catalog-group"></select>
-              <span id="batch-controls" hidden>
-                <button id="select-all-episodes" type="button">全选本线路</button>
-                <button id="clear-episodes" type="button">取消选择</button>
-                <span id="batch-count" role="status">已选 0 集</span>
-              </span>
-            </div>
-            <div id="catalog-episodes" class="episode-grid"></div>
-            <div class="selection-actions selection-bottom">
-              <span id="selected-episode"></span>
-              <button id="play-episode" class="primary" data-control disabled>播放当前集</button>
-              <button id="download-episode" data-admin hidden>下载当前集</button>
-              <button id="download-batch" class="primary" data-admin hidden>下载已选剧集</button>
-            </div>
-          </section>
-          <div class="current-source">
-            <span>正在放映</span>
-            <strong id="current-title">未选择</strong>
-            <button id="clear" class="quiet" disabled>清空</button>
-          </div>
+          <!-- discovery-panel -->
         </section>
         <section id="local-panel" class="panel" hidden>
           <div class="panel-header row">

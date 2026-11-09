@@ -49,7 +49,9 @@ export function publicAssets(root) {
     if (encoding !== 'identity') res.set('Content-Encoding', encoding);
     return res.send(selected.body);
   };
+  const discovery = fs.readFileSync(path.join(root, 'public/discovery.html'), 'utf8');
   middleware.html = name => fs.readFileSync(path.join(root, 'public', name), 'utf8')
+    .replace('<!-- discovery-panel -->', () => discovery)
     .replace(/\b(src|href)="(\/[^"?#]+)"/g, (original, attr, url) => assets.has(url) ? `${attr}="${prefix}${url}"` : original);
   return middleware;
 }

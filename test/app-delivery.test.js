@@ -7,6 +7,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 
 function fixture(kind, timers = { setTimeout() {}, clearTimeout() {} }) {
   const elements = new Map(); const beginnings = []; const failures = []; const engines = [];
+  let now = 0;
   const element = id => {
     if (!elements.has(id)) elements.set(id, { textContent: '', value: '', hidden: false, classList: { toggle() {} },
       setAttribute() {}, removeAttribute(name) { delete this[name]; }, addEventListener() {}, replaceChildren() {}, append() {} });
@@ -25,11 +26,12 @@ function fixture(kind, timers = { setTimeout() {}, clearTimeout() {} }) {
     fail() { this.listeners.get('error')?.('error', { fatal: true }); }
   }
   const context = vm.createContext({ URL, URLSearchParams, Promise, Hls,
-    location: { pathname: '/test', hash: '', origin: 'https://watch.example' }, performance: { now: () => 0 },
+    location: { pathname: '/test', hash: '', origin: 'https://watch.example' }, performance: { now: () => now },
     document: { getElementById: element, createElement: () => element('created') },
     setInterval() {}, ...timers,
     mountAtomPlayer: () => ({ video, active: true, atom: {}, setFullscreen() {}, reset() {}, update() {} }),
     createDanmaku: () => ({ clear() {}, ingest() {} }), loadMediaEngine: async () => {},
+    createDiscovery: () => ({ refresh() {} }),
     createPlayer: () => ({ toggleFullscreen() {}, begin: (media, version, options) => beginnings.push({ media, version, ...options }), attachHls() {}, fail: text => failures.push(text) }),
   });
   // Stub imported adapters, then execute the complete application including its
@@ -46,8 +48,29 @@ function fixture(kind, timers = { setTimeout() {}, clearTimeout() {} }) {
     if (kind === 'hls') { const engine = engines.at(-1); return () => engine.fail(); }
     const callback = video.onerror; return () => { video.error = { code: 4 }; callback(); };
   };
-  return { element, hasElement: id => elements.has(id), beginnings, failures, engines, select, sourceUrl, errorCallback };
+  return { element, hasElement: id => elements.has(id), beginnings, failures, engines, select, sourceUrl, errorCallback,
+    advance(ms) { now += ms; } };
 }
+
+test('selection preloads immediately and starts at the shared three-second deadline', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture('mp4', { setTimeout, clearTimeout });
+  const video = f.element('video');
+  let starts = 0;
+  Object.assign(video, { readyState: 4, duration: 60, play: async () => { starts++; video.paused = false; } });
+  f.select({}, 1, { position: 0, paused: false, updatedAt: 3000 });
+  await flush();
+  assert.match(f.sourceUrl(), /episode-1/);
+  assert.equal(f.element('connection').textContent, '预缓冲中');
+  f.advance(2999);
+  t.mock.timers.tick(2999);
+  assert.equal(starts, 0);
+  f.advance(1);
+  t.mock.timers.tick(1);
+  await flush();
+  assert.equal(starts, 1);
+  assert.equal(video.currentTime, 0);
+});
 
 test('a late viewer can start before metadata and a silent startup stall retries the relay once', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });

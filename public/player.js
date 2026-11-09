@@ -23,7 +23,7 @@ export function createPlayer({ video, document: doc = document, subtitles, notif
   const preferenceMenus = ['quality', 'subtitle'];
   const menuSignatures = new Map();
   let generation = 0; let media; let hls; let dash; let externalTrack; let subtitleRequest;
-  let quality = 'auto'; let subtitle = 'off'; let backendSubtitles = []; let subtitleState = ''; let ready = false; let error = false;
+  let quality = null; let subtitle = 'off'; let backendSubtitles = []; let subtitleState = ''; let ready = false; let error = false;
   let qualityItems = []; let subtitleItems = []; let changingSubtitle = false; let pendingSubtitle = 'off';
   let pointerOutside = false; let progressPointer; let progressTimer;
   let bufferingTimer;
@@ -78,20 +78,29 @@ export function createPlayer({ video, document: doc = document, subtitles, notif
     qualityItems.sort((a, b) => (b.height || 0) - (a.height || 0) || (b.bandwidth || 0) - (a.bandwidth || 0));
     const duplicateLabels = new Map(); qualityItems.forEach(item => duplicateLabels.set(item.label, (duplicateLabels.get(item.label) || 0) + 1));
     qualityItems = qualityItems.map(item => ({ ...item, label: duplicateLabels.get(item.label) > 1 && item.bandwidth ? `${item.label} · ${(item.bandwidth / 1000000).toFixed(1)} Mbps` : item.label }));
-    if (quality !== 'auto' && qualityItems.length && !qualityItems.some(item => item.id === quality)) quality = 'auto';
+    if (quality !== 'auto' && qualityItems.length && !qualityItems.some(item => item.id === quality)) quality = null;
     const selected = qualityItems.find(item => item.id === quality);
-    const label = selected?.label || (qualityItems.length ? `自动${current ? ` · ${current}` : ''}` : video.videoHeight ? `${video.videoHeight}P` : '');
+    const label = selected?.label || (qualityItems.length && quality === 'auto' ? `自动${current ? ` · ${current}` : ''}` : video.videoHeight ? `${video.videoHeight}P` : '');
     element('quality-button').textContent = label ? `清晰度 · ${label}` : '清晰度';
     menu('quality', qualityItems.length ? [{ id: 'auto', label: '自动 · 随网络调整' }, ...qualityItems] : [], quality, chooseQuality,
       !media ? '选择影片后可设置' : !qualityItems.length ? ready ? '当前片源仅提供原画' : '正在读取片源清晰度…' : qualityItems.length === 1 ? '当前片源仅提供以上清晰度' : '仅影响你的画面');
   }
-  function chooseQuality(id) {
+  function chooseQuality(id, initial = false) {
     if (id !== 'auto' && !qualityItems.some(item => item.id === id)) return;
     try {
       if (dash) { dash.updateSettings({ streaming: { abr: { autoSwitchBitrate: { video: id === 'auto' } } } }); if (id !== 'auto') dash.setRepresentationForTypeById('video', id); }
-      if (hls) hls.nextLevel = id === 'auto' ? -1 : Number(id);
+      if (hls) {
+        const level = id === 'auto' ? -1 : Number(id);
+        if (initial) hls.startLevel = level;
+        hls.nextLevel = level;
+      }
       quality = id; renderQuality();
     } catch { notify('暂时无法切换清晰度，请稍后重试。'); }
+  }
+  function applyInitialQuality() {
+    renderQuality();
+    const preferred = quality ?? qualityItems[0]?.id;
+    if (preferred !== undefined) chooseQuality(preferred, true);
   }
   function renderSubtitles() {
     subtitleItems = [];
@@ -148,7 +157,7 @@ export function createPlayer({ video, document: doc = document, subtitles, notif
     element('player-error').hidden = true;
     media = next; qualityItems = []; backendSubtitles = []; subtitleState = ''; subtitleItems = [];
     pendingSubtitle = preserve ? subtitle : 'off';
-    if (!preserve) { quality = 'auto'; subtitle = 'off'; }
+    if (!preserve) { quality = null; subtitle = 'off'; }
     externalTrack?.remove(); externalTrack = null; closeMenus(); loading(next ? '正在加载影片…' : '');
     renderQuality(); renderSubtitles(); void loadSubtitles(generation, version);
     return generation;
@@ -163,7 +172,7 @@ export function createPlayer({ video, document: doc = document, subtitles, notif
       if (token !== generation || dash !== player) return;
       renderQuality(); renderSubtitles();
     });
-    player.on(names.STREAM_INITIALIZED, () => { if (token === generation && dash === player) { if (quality !== 'auto') chooseQuality(quality); restoreSubtitle(); } });
+    player.on(names.STREAM_INITIALIZED, () => { if (token === generation && dash === player) { applyInitialQuality(); restoreSubtitle(); } });
     if (names.TEXT_TRACKS_ADDED) player.on(names.TEXT_TRACKS_ADDED, () => { if (token === generation && dash === player) restoreSubtitle(); });
   }
   function attachHls(player, names) {
@@ -172,7 +181,7 @@ export function createPlayer({ video, document: doc = document, subtitles, notif
       if (token !== generation || hls !== player) return;
       renderQuality(); renderSubtitles();
     });
-    player.on(names.MANIFEST_PARSED, () => { if (token === generation && hls === player) { if (quality !== 'auto') chooseQuality(quality); restoreSubtitle(); } });
+    player.on(names.MANIFEST_PARSED, () => { if (token === generation && hls === player) { applyInitialQuality(); restoreSubtitle(); } });
   }
   function fail(text = '影片加载失败') { error = true; loading(''); element('player-error').hidden = false; element('player-error-text').textContent = text; }
   settingsButton.onclick = () => setSettings(!settingsOpen);
