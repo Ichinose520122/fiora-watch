@@ -20,8 +20,8 @@ does not assert an open-source license. Review that status before redistribution
   room commands. Watch owns HLS/DASH loading, quality and external subtitle menus.
 - `watchFullscreen` / `watchIsFullscreen` keep the whole Watch shell (including
   subtitle menus, chat danmaku and join/error overlays) in fullscreen.
-- Watch owns the control-hide timer so a focused menu stays operable while the
-  entire progress bar disappears when fullscreen playback is idle.
+- Watch owns the toolbar and hides the Atom timeline one second after the mouse
+  leaves the video surface. The volume slider and fullscreen button stay visible.
 - Local playback history is disabled when Watch controls are present; room state
   is the sole playback position. Atom's standalone danmaku plugin and its mobile
   settings initialization are skipped, so no unused remote workers are loaded.
@@ -45,7 +45,7 @@ Additional Watch compatibility behavior:
   Desktop click counting clears its old timer before starting a new one.
 - Watch CSS disables pointer events on decorative loading/error descendants;
   Atom's generic layer-child rule otherwise makes the center spinner eat clicks.
-- Native volume changes refresh Atom's mute icon, including silent autoplay.
+- Native volume changes refresh the Watch volume slider, including silent autoplay.
 - Progress dragging sends `seek-start` and `seek-cancel` lifecycle notifications.
   Native timeline updates do not overwrite the drag preview; pointer capture
   preserves release handling outside the progress bar. A committed seek updates

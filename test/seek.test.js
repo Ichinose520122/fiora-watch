@@ -79,6 +79,7 @@ test('a seek acknowledgement preserves the frame already decoded at the destinat
 
 test('ordinary clock updates do not keep seeking a playing decoder during a stall', async () => {
   const f = fixture(); await flush();
+  f.video.played = { length: 1 };
   f.video.paused = false; f.video.readyState = 2;
   f.receive({ ...f.state(), paused: false, serverTime: 4000 });
   assert.equal(f.video.currentTime, 10);

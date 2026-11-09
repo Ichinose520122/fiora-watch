@@ -34,6 +34,39 @@ function engine(representations) {
 const events = { STREAM_INITIALIZED: 'ready', REPRESENTATION_SWITCH: 'switch', QUALITY_CHANGE_RENDERED: 'quality', TEXT_TRACKS_ADDED: 'text' };
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
+test('only mouse exit hides the timeline after one second, without interrupting a drag', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture();
+  const screen = f.get('player-screen');
+  const shell = f.get('player-shell');
+  const pointer = (type, pointerType = 'mouse') => Object.assign(new Event(type), { pointerType, pointerId: 1 });
+  const hidden = () => shell.classList.contains('progress-hidden');
+
+  screen.dispatchEvent(pointer('pointerleave'));
+  t.mock.timers.tick(999);
+  assert.equal(hidden(), false);
+  t.mock.timers.tick(1);
+  assert.equal(hidden(), true);
+  f.video.dispatchEvent(new Event('playing'));
+  assert.equal(hidden(), true);
+  screen.dispatchEvent(pointer('pointerenter'));
+  assert.equal(hidden(), false);
+
+  screen.closest = () => screen;
+  screen.dispatchEvent(pointer('pointerdown'));
+  screen.dispatchEvent(pointer('pointerleave'));
+  t.mock.timers.tick(1500);
+  assert.equal(hidden(), false);
+  f.doc.dispatchEvent(pointer('pointerup'));
+  t.mock.timers.tick(1000);
+  assert.equal(hidden(), true);
+
+  screen.dispatchEvent(pointer('pointerdown', 'touch'));
+  screen.dispatchEvent(pointer('pointerleave', 'touch'));
+  t.mock.timers.tick(1500);
+  assert.equal(hidden(), false);
+});
+
 test('brief stalls and buffered seeks do not flash the loading overlay', t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const f = fixture(); f.controls.begin({ kind: 'mp4' }, 1);

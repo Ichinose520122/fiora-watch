@@ -405,12 +405,12 @@ export function createApp(config, dependencies = {}) {
     });
   });
   app.post('/api/control', roomAccess, (req, res) => {
-    if (!req.grant.canControl) return res.status(403).json({ error: '只有私聊参与者、群主或管理员可以控制播放' });
+    if (!req.grant.canControl) return res.status(403).json({ error: '此影院授权仅可观看，请从 Fiora 重新进入' });
     throttle(req.session.user.id, 120);
     control(req.room, req.body); prefetch.cancel(req.room); store.save(); publish(req.room); res.json({ ok: true });
   });
   app.post('/api/media', roomAccess, async (req, res) => {
-    if (!req.grant.canControl) return res.status(403).json({ error: '没有切换视频的权限' });
+    if (!req.grant.canControl) return res.status(403).json({ error: '此影院授权仅可观看，请从 Fiora 重新进入' });
     throttle(`media:${req.session.user.id}`, 15);
     const revision = req.body.revision;
     const delivery = req.body.youtubeDelivery;

@@ -14,7 +14,7 @@ let pendingSeek = false; let queuedPlayback; let inflightPlayback; let drainingP
 const atomShell = mountAtomPlayer({ requestControl: requestPlayerControl });
 const video = atomShell.video;
 const danmaku = createDanmaku({ container: $('danmaku-layer'), button: $('danmaku-toggle'), video });
-const player = createPlayer({ video, atom: atomShell.atom, notify: text => notice(text, true), subtitles: async (version, signal) => {
+const player = createPlayer({ video, notify: text => notice(text, true), subtitles: async (version, signal) => {
   const response = await fetch(`/api/bilibili/subtitles?room=${encodeURIComponent(room)}&version=${encodeURIComponent(version)}`, { signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]), headers: { 'X-Watch-Request': '1', 'X-Watch-Room': room || '' } });
   if (!response.ok) throw new Error('字幕暂时不可用');
   return response.json();
@@ -131,8 +131,11 @@ function receive(next) {
   if (!next.canControl && locallySeeking) {
     clearTimeout(seekTimer); seekSequence += 1; seekDragging = false; locallySeeking = false;
   }
-  $('identity').textContent = next.user.name; $('logout').hidden = false;
-  $('connection').textContent = next.paused ? '已暂停' : '同步播放中';
+  $('identity').textContent = next.user.name; $('logout').hidden = $('manage').hidden = false;
+  $('connection').textContent = !next.media ? '等待选片' : next.paused ? '已暂停' : '同步播放中';
+  $('choose-source').hidden = !next.canControl;
+  $('empty-hint').textContent = next.canControl ? '搜索影片、粘贴片源链接或打开媒体库。' : '等待可控制播放的房间成员选片。';
+  $('movie-meta').hidden = !next.media;
   $('title').textContent = next.media?.title || '尚未选择影片';
   playbackStatus();
   $('back-to-fiora').href = next.fioraUrl;
@@ -245,7 +248,17 @@ function requestPlayerControl(command, position) {
 }
 $('join').onclick = () => state?.canControl && state.paused ? togglePlayback() : unlock();
 $('unmute').onclick = () => { video.muted = false; autoMuted = false; $('unmute').hidden = true; if (!state?.paused && video.paused) void unlock(); };
-video.addEventListener('volumechange', () => { if (!video.muted) { autoMuted = false; $('unmute').hidden = true; } });
+const volume = $('volume');
+function updateVolume() {
+  volume.value = String(video.muted ? 0 : video.volume);
+  if (!video.muted) { autoMuted = false; $('unmute').hidden = true; }
+}
+video.addEventListener('volumechange', updateVolume);
+volume.oninput = () => {
+  video.volume = Number(volume.value);
+  if (video.volume > 0) video.muted = false;
+};
+updateVolume();
 $('toggle').onclick = togglePlayback;
 if (!atomShell.active) video.addEventListener('click', togglePlayback);
 function adjacentEpisode(direction) {
@@ -255,9 +268,21 @@ function adjacentEpisode(direction) {
 }
 $('previous-episode').onclick = () => attempt(() => selectEpisode(adjacentEpisode(-1)));
 $('next-episode').onclick = () => attempt(() => selectEpisode(adjacentEpisode(1)));
+function showRoomPanel(panel) {
+  $('cinema-layout').setAttribute('data-panel', panel);
+  $('show-chat').setAttribute('aria-pressed', String(panel === 'chat'));
+  $('show-episodes').setAttribute('aria-pressed', String(panel === 'episodes'));
+}
+$('show-chat').onclick = () => {
+  showRoomPanel('chat');
+  const list = $('messages');
+  list.scrollTop = list.scrollHeight;
+};
+$('show-episodes').onclick = () => showRoomPanel('episodes');
 function renderEpisodes() {
   const episodes = state?.media?.episodes || []; const index = state?.media?.episodeIndex || 0;
-  $('episode-panel').hidden = !episodes.length;
+  $('episode-panel').hidden = $('room-panel-switch').hidden = !episodes.length;
+  if (!episodes.length) showRoomPanel('chat');
   $('episode-panel').setAttribute('aria-busy', String(episodeBusy));
   const groupCount = new Set(episodes.map(episode => episode.group || '')).size;
   const groupEpisodes = episodes.filter(episode => episode.group === episodes[index]?.group).length;
@@ -288,9 +313,18 @@ async function selectEpisode(index) {
 $('seek').oninput = () => requestPlayerControl('seek-start');
 $('seek').onchange = event => requestPlayerControl('seek', Number(event.target.value));
 $('seek').onblur = () => requestPlayerControl('seek-cancel');
-$('volume').oninput = event => { video.volume = Number(event.target.value); };
 $('retry-player').onclick = () => { if (state?.media) { notice(''); loadMedia(fallbackUsed ? state.media.fallbackUrl : currentMedia, { preserve: true }); } };
 video.addEventListener('loadedmetadata', synchronize); video.addEventListener('canplay', synchronize);
+function renderTimeline() {
+  const hasDuration = Number.isFinite(video.duration);
+  $('time').textContent = `${time(video.currentTime)} / ${time(hasDuration ? video.duration : 0)}`;
+  if (!hasDuration) return;
+  const seek = $('seek');
+  seek.max = String(video.duration);
+  if (!locallySeeking && document.activeElement !== seek) seek.value = String(video.currentTime);
+}
+video.addEventListener('loadedmetadata', renderTimeline);
+video.addEventListener('timeupdate', renderTimeline);
 for (const event of ['loadeddata', 'canplay', 'playing']) video.addEventListener(event, () => {
   if (video.readyState >= 2 && (event === 'playing' || state?.paused)) { clearTimeout(startupTimer); armStartup = undefined; }
   updateJoin();
@@ -343,11 +377,7 @@ $('comment-form').onsubmit = async event => {
 };
 $('comment').onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('comment-form').requestSubmit(); } };
 $('logout').onclick = () => attempt(async () => { await api('/api/logout', {}); events?.close(); location.replace('/'); });
-setInterval(() => {
-  if (!state) return; synchronize();
-  $('time').textContent = `${time(video.currentTime)} / ${time(Number.isFinite(video.duration) ? video.duration : 0)}`;
-  if (Number.isFinite(video.duration)) { $('seek').max = String(video.duration); if (!locallySeeking && document.activeElement !== $('seek')) $('seek').value = String(video.currentTime); }
-}, 1000);
+setInterval(synchronize, 1000);
 setInterval(refreshChat, 2000);
 attempt(async () => {
   const fragment = new URLSearchParams(location.hash.slice(1)); const ticket = fragment.get('ticket');

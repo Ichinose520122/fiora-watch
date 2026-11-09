@@ -103,9 +103,12 @@ test('configuration requires dedicated strong secret and HTTPS outside localhost
   assert.equal(loadConfig({ WATCH_SHARED_SECRET: secret }).audience, 'http://localhost:9300');
 });
 
-test('HTTP integration: single-use login, room isolation, two viewers, CSRF, roles and ranged local media', async t => {
+test('HTTP integration: ordinary members can search, select and play within their signed room', async t => {
   const dataDir = temporary(t); const libraryDir = path.join(dataDir, 'library');
-  const instance = createApp({ ...config, dataDir, libraryDir }, { resolve: async url => ({ url, title: 'Test', kind: 'mp4' }) });
+  const instance = createApp({ ...config, dataDir, libraryDir }, {
+    resolve: async url => ({ url, title: 'Test', kind: 'mp4' }),
+    catalog: { search: async query => ({ items: [{ title: query }], hasMore: false }) },
+  });
   fs.writeFileSync(path.join(libraryDir, 'movie.mp4'), '0123456789');
   const server = instance.app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -122,13 +125,23 @@ test('HTTP integration: single-use login, room isolation, two viewers, CSRF, rol
   assert.equal((await request('/api/state')).status, 401);
   assert.equal((await request('/api/state', cookie, undefined, { 'X-Watch-Room': 'c'.repeat(24) })).status, 403);
   assert.equal((await request('/api/media', cookie, { mode: 'online', url: 'https://cdn.example.com/a.mp4', revision: 0 }, { Origin: 'https://evil.example' })).status, 403);
-  assert.equal((await request('/api/media', cookie, { mode: 'local', id: 'local:movie.mp4', revision: 0 })).status, 200);
-  const login2 = await request('/api/session', '', { ticket: signTicket(payload({ sub: 'c'.repeat(24), admin: false, canControl: false }), secret) });
+  const login2 = await request('/api/session', '', { ticket: signTicket(payload({ sub: 'c'.repeat(24), admin: false }), secret) });
   const cookie2 = login2.headers.get('set-cookie').split(';')[0];
-  assert.equal((await request('/api/control', cookie2, { action: 'play', revision: 1 })).status, 403);
+  const catalog = await request('/api/catalog/search?q=Test', cookie2);
+  assert.equal(catalog.status, 200);
+  assert.deepEqual((await catalog.json()).items, [{ title: 'Test' }]);
+  assert.equal((await request('/api/media', cookie2, { mode: 'local', id: 'local:movie.mp4', revision: 0 }, { 'X-Watch-Room': 'd'.repeat(24) })).status, 403);
+  assert.equal((await request('/api/media', cookie2, { mode: 'local', id: 'local:movie.mp4', revision: 0 })).status, 200);
   assert.equal((await request('/api/downloads', cookie2, { url: 'https://cdn.example.com/a.mp4' })).status, 403);
-  assert.equal((await request('/api/control', cookie, { action: 'play', revision: 1 })).status, 200);
-  const second = await (await request('/api/state', cookie2)).json(); assert.equal(second.paused, false); assert.equal(second.revision, 2);
+  assert.equal((await request('/api/settings/playback', cookie2)).status, 403);
+  const legacy = await request('/api/session', '', { ticket: signTicket(payload({ sub: 'e'.repeat(24), admin: false, canControl: false }), secret) });
+  const legacyCookie = legacy.headers.get('set-cookie').split(';')[0];
+  assert.equal((await request('/api/control', legacyCookie, { action: 'pause', revision: 1 })).status, 403);
+  assert.equal((await request('/api/media', legacyCookie, { mode: 'clear', revision: 1 })).status, 403);
+  assert.equal((await request('/api/control', cookie2, { action: 'pause', revision: 1 })).status, 200);
+  assert.equal((await request('/api/control', cookie2, { action: 'play', revision: 2 })).status, 200);
+  const observer = await (await request('/api/state', cookie)).json();
+  assert.equal(observer.paused, false); assert.equal(observer.revision, 3);
   assert.equal((await request('/api/control', cookie, { action: 'pause', revision: 1 })).status, 400);
   const partial = await request('/media/local/movie.mp4', cookie2, undefined, { Range: 'bytes=2-5' }); assert.equal(partial.status, 206); assert.equal(await partial.text(), '2345');
   assert.equal((await request('/media/local/movie.mp4')).status, 401);
