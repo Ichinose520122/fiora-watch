@@ -3,22 +3,22 @@
   <label for="search">搜索番剧</label>
   <div class="input-row">
     <input id="search" type="search" required maxlength="80" placeholder="输入片名…">
-    <button id="search-button" class="primary">搜索影片</button>
+    <button id="search-button" class="primary">搜索</button>
   </div>
 </form>
 <div id="search-results" class="catalog-grid" aria-live="polite"></div>
 <button id="more-results" class="quiet more-results" hidden>查看更多</button>
 <div class="source-section">
   <form id="source-form">
-    <label for="source">已有片源链接（支持 YouTube 视频和 X 视频帖子）</label>
+    <label for="source">视频链接</label>
     <div class="input-row source-row">
-      <input id="source" type="url" required maxlength="4096" placeholder="https://…">
+      <input id="source" type="url" required maxlength="4096" placeholder="粘贴视频链接（支持 YouTube、X 等）">
       <button id="inspect" type="button">读取分集</button>
       <button id="load" class="primary" disabled>立即播放</button>
     </div>
-    <label id="youtube-link-options" hidden>此 YouTube 视频在本房间的播放方式
+    <label id="youtube-link-options" hidden>播放方式
       <select id="youtube-link-delivery">
-        <option value="">沿用此视频的设置（首次跟随全站）</option>
+        <option value="">自动（使用当前设置）</option>
         <option value="proxy">服务器中继</option>
         <option value="direct">浏览器直连（失败时尝试中继）</option>
         <option value="default">恢复跟随全站设置</option>
@@ -29,7 +29,6 @@
 <section id="catalog-detail" class="catalog-detail" aria-label="剧集详情" hidden>
   <div class="episode-heading">
     <div>
-      <span class="eyebrow">EPISODES</span>
       <h2 id="catalog-title"></h2>
     </div>
     <span id="catalog-count" class="identity"></span>

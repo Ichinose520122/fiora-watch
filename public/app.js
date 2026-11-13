@@ -151,7 +151,7 @@ function receive(next) {
   $('identity').textContent = next.user.name; $('logout').hidden = $('manage').hidden = false;
   $('connection').textContent = !next.media ? '等待选片' : next.paused ? '已暂停' : startDelay() > 0 ? '预缓冲中' : '同步播放中';
   $('choose-source').hidden = !next.canControl;
-  $('empty-hint').textContent = next.canControl ? '搜索影片、粘贴片源链接或打开媒体库。' : '等待可控制播放的房间成员选片。';
+  $('empty-hint').textContent = next.canControl ? '在下方搜索影片或粘贴链接。' : '等待房间成员选择影片。';
   $('movie-meta').hidden = !next.media;
   $('title').textContent = next.media?.title || '尚未选择影片';
   playbackStatus();
@@ -416,7 +416,7 @@ attempt(async () => {
     inviteSource = fragment.get('source');
     history.replaceState(null, '', `/room/${room}`);
   }
-  if (!room) { notice('从 Fiora 的影院邀请进入。'); $('chat-status').textContent = '未登录'; return; }
+  if (!room) { $('chat-status').textContent = '未登录'; return; }
   $('home').href = `/room/${room}`;
   $('manage').href = `/room/${room}/manage`;
   const discoveryPanel = $('online-panel');

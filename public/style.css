@@ -1,9 +1,11 @@
 :root {
   color-scheme: dark;
   scroll-padding-top: 70px;
-  --bg: #070b0a;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --bg: #0b100f;
   --bg-subtle: #0c1312;
-  --panel: rgba(18, 28, 27, 0.78);
+  --panel: rgba(20, 29, 28, 0.92);
   --panel-solid: #131e1d;
   --panel-alt: rgba(24, 37, 35, 0.85);
   --elevated: #1d2d2b;
@@ -12,7 +14,7 @@
   --line: rgba(255, 255, 255, 0.07);
   --line-strong: rgba(255, 255, 255, 0.13);
   --muted: #8ea5a1;
-  --muted-dim: #5e7470;
+  --muted-dim: #80938f;
   --ink: #f0f7f6;
   --ink-soft: #cfe0dd;
   --accent: #5bb3a7;
@@ -26,7 +28,7 @@
   --danger-soft: rgba(240, 146, 137, 0.12);
   --danger-border: rgba(240, 146, 137, 0.3);
   --specular: inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  --shadow-card: 0 20px 44px -12px rgba(0, 0, 0, 0.6), 0 0 1px 1px rgba(0, 0, 0, 0.4), var(--specular);
+  --shadow-card: 0 8px 24px -12px rgba(0, 0, 0, 0.4);
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -77,11 +79,11 @@ input,
 textarea,
 select {
   font: inherit;
-  border-radius: 0;
+  border-radius: var(--radius-sm);
 }
 
 input[type="file"]::file-selector-button {
-  border-radius: 0;
+  border-radius: var(--radius-sm);
 }
 
 button,
@@ -181,6 +183,7 @@ button.primary:hover:not(:disabled) {
 }
 
 .nav-pill {
+  border-radius: var(--radius-sm);
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--line);
   color: var(--ink-soft);
@@ -234,6 +237,7 @@ button.primary:hover:not(:disabled) {
 }
 
 .brand-icon {
+  border-radius: var(--radius-sm);
   display: inline-grid;
   place-items: center;
   width: 32px;
@@ -266,6 +270,7 @@ button.primary:hover:not(:disabled) {
 }
 
 .identity {
+  border-radius: var(--radius-sm);
   font-size: 12px;
   font-weight: 500;
   color: var(--ink-soft);
@@ -329,6 +334,7 @@ h3 {
 }
 
 .status-pill {
+  border-radius: var(--radius-sm);
   display: inline-flex;
   align-items: center;
   border: 1px solid var(--soft-border);
@@ -355,6 +361,7 @@ h3 {
 }
 
 .notice {
+  border-radius: var(--radius-sm);
   border: 1px solid var(--soft-border);
   background: rgba(79, 155, 145, 0.14);
   backdrop-filter: blur(12px);
@@ -383,7 +390,7 @@ h3 {
 .cinema-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 350px;
-  gap: 24px;
+  gap: 20px;
   align-items: start;
 }
 
@@ -394,7 +401,7 @@ h3 {
 .cinema-layout .cinema-discovery {
   min-height: 0;
   margin-top: 14px;
-  padding: 14px 16px;
+  padding: 18px 20px;
 }
 
 .cinema-discovery > summary {
@@ -417,6 +424,7 @@ h3 {
 }
 
 .screen {
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
   position: relative;
   aspect-ratio: 16 / 9;
   max-height: calc(100vh - 250px);
@@ -448,6 +456,7 @@ video {
 }
 
 .empty-icon {
+  border-radius: var(--radius-md);
   display: grid;
   place-items: center;
   width: 72px;
@@ -481,6 +490,7 @@ video {
 }
 
 #empty a {
+  border-radius: var(--radius-sm);
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -536,6 +546,7 @@ video {
 }
 
 .player-controls {
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
   background: linear-gradient(180deg, rgba(20, 32, 30, 0.96) 0%, rgba(11, 18, 17, 0.98) 100%);
   border: 1px solid rgba(255, 255, 255, 0.11);
   border-top: 1px solid rgba(255, 255, 255, 0.06);
@@ -756,10 +767,11 @@ input[type=range]::-moz-range-thumb {
 }
 
 .movie-meta {
+  border-radius: var(--radius-md);
   display: flex;
   gap: 16px;
-  padding: 16px 20px;
-  margin-top: 16px;
+  padding: 14px 18px;
+  margin-top: 12px;
   align-items: center;
   background: var(--panel);
   backdrop-filter: blur(20px) saturate(140%);
@@ -769,6 +781,7 @@ input[type=range]::-moz-range-thumb {
 }
 
 .movie-mark {
+  border-radius: var(--radius-sm);
   flex-shrink: 0;
   font-size: 10.5px;
   font-weight: 700;
@@ -806,6 +819,7 @@ input[type=range]::-moz-range-thumb {
 
 /* Chat Sidebar */
 .chat-card {
+  border-radius: var(--radius-md);
   display: flex;
   flex-direction: column;
   height: clamp(500px, calc(56.25vw - 120px), 740px);
@@ -843,6 +857,7 @@ input[type=range]::-moz-range-thumb {
 }
 
 .chat-heading > span {
+  border-radius: var(--radius-sm);
   color: var(--muted);
   font-size: 11px;
   font-weight: 550;
@@ -878,6 +893,7 @@ input[type=range]::-moz-range-thumb {
 }
 
 .avatar {
+  border-radius: var(--radius-sm);
   flex-shrink: 0;
   width: 30px;
   height: 30px;
@@ -917,6 +933,7 @@ input[type=range]::-moz-range-thumb {
 }
 
 .bubble {
+  border-radius: var(--radius-sm);
   display: inline-block;
   max-width: 100%;
   font-size: 13px;
@@ -946,6 +963,7 @@ input[type=range]::-moz-range-thumb {
 }
 
 .composer {
+  border-radius: var(--radius-sm);
   margin: 0 12px 12px;
   border: 1px solid var(--line-strong);
   background: var(--input-bg);
@@ -1016,6 +1034,20 @@ input[type=range]::-moz-range-thumb {
   margin: 0;
 }
 
+#time,
+.volume,
+.chat-heading > span {
+  background: transparent;
+  border-color: transparent;
+}
+
+.cinema-discovery .current-source {
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line);
+  padding-inline: 0;
+}
+
 /* Media Center Management Layout */
 .management {
   max-width: 1440px;
@@ -1031,6 +1063,7 @@ input[type=range]::-moz-range-thumb {
 }
 
 .tabs {
+  border-radius: var(--radius-md);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1076,6 +1109,7 @@ input[type=range]::-moz-range-thumb {
 }
 
 .panel {
+  border-radius: var(--radius-md);
   padding: 28px 30px;
   border: 1px solid var(--line);
   background: var(--panel);
@@ -1301,6 +1335,7 @@ textarea::placeholder {
 }
 
 .catalog-card {
+  border-radius: var(--radius-sm);
   display: flex;
   align-items: stretch;
   gap: 14px;
@@ -1376,6 +1411,7 @@ textarea::placeholder {
 }
 
 .catalog-detail {
+  border-radius: var(--radius-md);
   margin-top: 24px;
   border: 1px solid var(--soft-border);
   padding: 22px;
@@ -1391,6 +1427,7 @@ textarea::placeholder {
 
 /* Episodes Panel & Grid */
 .episode-panel {
+  border-radius: var(--radius-md);
   margin-top: 16px;
   padding: 20px;
   border: 1px solid var(--line);
@@ -1512,6 +1549,7 @@ textarea::placeholder {
 }
 
 .library-toolbar {
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1583,6 +1621,7 @@ textarea::placeholder {
 }
 
 .item {
+  border-radius: var(--radius-sm);
   padding: 18px;
   border: 1px solid var(--line);
   background: var(--panel-alt);
@@ -1684,6 +1723,7 @@ input[type=checkbox] {
 }
 
 .download-job {
+  border-radius: var(--radius-md);
   background: var(--panel-alt);
   padding: 20px;
   border: 1px solid var(--line);
@@ -1703,6 +1743,7 @@ input[type=checkbox] {
 }
 
 .job-status {
+  border-radius: var(--radius-sm);
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
@@ -1746,6 +1787,7 @@ input[type=checkbox] {
 }
 
 .job-metric {
+  border-radius: var(--radius-sm);
   min-width: 0;
   font-size: 11px;
   color: var(--muted);
@@ -1783,6 +1825,7 @@ input[type=checkbox] {
 }
 
 .account-card {
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   gap: 18px;
@@ -1862,6 +1905,7 @@ input[type=checkbox] {
 }
 
 .account-qr {
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   gap: 26px;
@@ -2187,12 +2231,11 @@ input[type=checkbox] {
 
 /* The fullscreen target includes the video, menus, and room controls. */
 .player-shell {
+  border-radius: var(--radius-md);
   position: relative;
   min-width: 0;
   background: #050808;
-  box-shadow:
-    0 28px 60px -12px rgba(0, 0, 0, 0.72),
-    0 0 44px rgba(79, 155, 145, 0.08);
+  box-shadow: 0 12px 32px -12px rgba(0, 0, 0, 0.55);
   isolation: isolate;
 }
 
@@ -2248,6 +2291,7 @@ input[type=checkbox] {
 }
 
 .player-settings-menu {
+  border-radius: var(--radius-md);
   position: absolute;
   right: -44px;
   bottom: calc(100% + 10px);
@@ -2347,7 +2391,7 @@ input[type=checkbox] {
 }
 
 .player-menu {
-  margin-top: 4px;
+  border-radius: var(--radius-md);  margin-top: 4px;
   padding: 4px;
   background: var(--input-bg);
 }
@@ -2545,8 +2589,6 @@ body.player-fullscreen {
 }
 
 @media (max-width: 760px) {
-  .player-shell {
-  }
   .player-shell .player-controls {
     padding: 4px 10px;
   }
@@ -2676,6 +2718,7 @@ body.player-fullscreen {
 
 /* Batch Episode Checkboxes & Progress Bars */
 .episode-choice {
+  border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2759,6 +2802,7 @@ body.player-fullscreen {
 }
 
 .download-job pre {
+  border-radius: var(--radius-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 180px;
@@ -2771,6 +2815,7 @@ body.player-fullscreen {
 }
 
 .download-error {
+  border-radius: var(--radius-sm);
   color: #f5b3ac;
   background: var(--danger-soft);
   border: 1px solid var(--danger-border);
@@ -2822,6 +2867,7 @@ body.player-fullscreen {
 }
 
 .relay-cache-settings {
+  border-radius: var(--radius-md);
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 0.65rem;
@@ -2834,6 +2880,7 @@ body.player-fullscreen {
 }
 
 .relay-cache-settings legend {
+  border-radius: var(--radius-sm);
   padding: 3px 10px;
   background: var(--soft);
   border: 1px solid var(--soft-border);
